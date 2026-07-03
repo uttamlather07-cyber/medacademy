@@ -508,3 +508,37 @@ def lock_and_reveal(db):
             db["users"][student]["lifetime_score"] -= 1
     db["quiz_state"]["revealed"] = True
     save_db(db)
+
+
+def render_leaderboard(db, highlight_user: str = None):
+    """Ranked leaderboard by current session score (resets each 'shift',
+    via the 'Start New Shift' button in admin's Performance tab), with
+    lifetime score shown alongside for context. Called from both
+    admin_dashboard.py and student_dashboard.py right after every quiz
+    reveal, so students/admin see standings immediately."""
+    session_scores = db.get("current_session_scores", {})
+    all_students = [u for u, info in db["users"].items() if info["role"] == "student"]
+
+    if not all_students:
+        return
+
+    ranked = sorted(all_students, key=lambda u: session_scores.get(u, 0), reverse=True)
+
+    st.write("### 🏆 Live Leaderboard")
+    medals = ["🥇", "🥈", "🥉"]
+    for i, student in enumerate(ranked):
+        medal = medals[i] if i < 3 else f"#{i + 1}"
+        session_pts = session_scores.get(student, 0)
+        lifetime_pts = db["users"][student].get("lifetime_score", 0)
+        is_me = highlight_user is not None and student == highlight_user
+        name_display = f"**{student.capitalize()} (You)**" if is_me else student.capitalize()
+
+        col_rank, col_name, col_session, col_life = st.columns([0.6, 2, 1, 1])
+        with col_rank:
+            st.write(medal)
+        with col_name:
+            st.write(name_display)
+        with col_session:
+            st.write(f"**{session_pts}** today")
+        with col_life:
+            st.caption(f"{lifetime_pts} lifetime")
