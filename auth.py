@@ -12,12 +12,6 @@ from styles import ecg_divider
 
 def render_hero(db):
     total_students = len([u for u, i in db["users"].items() if i["role"] == "student"])
-    online_now = len([
-        u for u, i in db["users"].items()
-        if time.time() - i.get("last_seen", 0) < 15
-    ])
-    questions_asked = 1 if db.get("quiz_state", {}).get("question_data") else 0
-    messages_sent = len(db.get("chat", []))
 
     st.markdown(
         f"""
@@ -27,7 +21,7 @@ def render_hero(db):
             </div>
             <div class="hero-title anim-in-delay-1">Precision prep for <em>NEET</em>, run like rounds.</div>
             <p class="hero-sub anim-in-delay-2">
-                Case-study quizzes, live diagnosis polls, and a real-time staff room —
+                Case-study quizzes and live diagnosis polls —
                 built for students who treat every practice question like a patient chart.
             </p>
         </div>
@@ -39,8 +33,6 @@ def render_hero(db):
         f"""
         <div class="vitals-strip anim-in-delay-3">
             <div class="vital-stat"><div class="num mono-num">{total_students}</div><div class="label">Residents Enrolled</div></div>
-            <div class="vital-stat"><div class="num mono-num">{online_now}</div><div class="label">On Duty Now</div></div>
-            <div class="vital-stat"><div class="num mono-num">{messages_sent}</div><div class="label">Ward Messages</div></div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -96,9 +88,7 @@ def render_login_signup():
                                 "lifetime_score": 0,
                                 "last_seen": time.time(),
                                 "blocked": False,
-                                "metrics": {"Revision": 0, "Tests": 0, "DPPs": 0},
                                 "avatar_color": "#5b8def",
-                                "last_seen_chat_count": 0,
                             }
                             # Atomic: the database itself checks "does this
                             # username already exist?" and inserts it in one
