@@ -8,13 +8,12 @@ import html as html_lib
 import streamlit as st
 
 from database import save_db
-from chat import render_chat_messages, render_chat_composer, has_unread_messages, unread_message_count, mark_chat_seen
 from quiz import (
     generate_question, start_quiz, lock_and_reveal, clear_quiz, submit_answer,
     start_auto_quiz, advance_auto_quiz, time_left, is_time_up,
-    parse_pasted_questions, start_bank_quiz,
+    parse_pasted_questions, start_bank_quiz, render_leaderboard,
 )
-from polls import start_poll, start_tracking_poll, end_poll, TRACKING_OPTIONS
+from polls import start_poll, end_poll
 from styles import ecg_divider
 from chapters import SUBJECTS, get_chapters
 from library import render_library_browser, render_library_uploader
@@ -25,69 +24,9 @@ def render_admin_dashboard(db):
     st.markdown("<h1 style='margin-top:4px;'>Chief Medical Officer Terminal</h1>", unsafe_allow_html=True)
     ecg_divider()
 
-    # ---------------- NEW MESSAGE NOTIFICATION ----------------
-    if has_unread_messages(db, st.session_state.username):
-        count = unread_message_count(db, st.session_state.username)
-        plural = "message" if count == 1 else "messages"
-        st.markdown(
-            f"<div class='announce-banner'>💬 {count} new {plural} in Chat & Security — open that "
-            f"tab to read {'it' if count == 1 else 'them'}.</div>",
-            unsafe_allow_html=True,
-        )
-
-    tab_quiz, tab_chat, tab_poll, tab_announce, tab_leaders, tab_library = st.tabs(
-        ["📝 Medical Quiz", "💬 Chat & Security", "📊 Smart Polls", "📢 Broadcasts", "🏆 Performance Tracking", "📚 Library"]
+    tab_quiz, tab_poll, tab_announce, tab_leaders, tab_library = st.tabs(
+        ["📝 Medical Quiz", "📊 Polls", "📢 Broadcasts", "🏆 Performance Tracking", "📚 Library"]
     )
-
-    # ---------------- CHAT ----------------
-    with tab_chat:
-        # Admin is actively viewing chat now, so clear the unread badge.
-        mark_chat_seen(db, st.session_state.username)
-
-        col_c1, col_c2 = st.columns([3, 1])
-        with col_c1:
-            st.subheader("Live Class Chat")
-            chat_container = st.container(height=460, border=True)
-            with chat_container:
-                render_chat_messages(db["chat"], st.session_state.username)
-            render_chat_composer(db, st.session_state.username, is_blocked=False, key_prefix="admin", is_admin=True)
-
-        with col_c2:
-            st.subheader("Security & Mod")
-            with st.container(border=True):
-                chat_is_on = db.get("chat_enabled", True)
-                status_label = "🟢 Chat is ON for students" if chat_is_on else "🔒 Chat is OFF for students"
-                st.markdown(f"**{status_label}**")
-                toggle_label = "🔒 Turn Chat OFF" if chat_is_on else "🟢 Turn Chat ON"
-                if st.button(toggle_label, type="secondary" if chat_is_on else "primary"):
-                    db["chat_enabled"] = not chat_is_on
-                    save_db(db)
-                    st.rerun()
-                st.caption("Admin can always post, even when chat is off for students.")
-                st.divider()
-
-                if st.button("🗑️ Purge ALL Chat", type="primary"):
-                    db["chat"] = []
-                    save_db(db)
-                    st.rerun()
-                st.divider()
-
-                all_students = [u for u, info in db["users"].items() if info["role"] == "student"]
-                if all_students:
-                    target_user = st.selectbox("Select Student:", all_students)
-                    if st.button(f"🗑️ Delete {target_user}'s Chat"):
-                        db["chat"] = [msg for msg in db["chat"] if msg["sender"] != target_user]
-                        save_db(db)
-                        st.success(f"Purged messages from {target_user}")
-
-                    is_blocked = db["users"][target_user].get("blocked", False)
-                    btn_txt = f"🔓 Unblock {target_user}" if is_blocked else f"🚫 Block {target_user}"
-                    if st.button(btn_txt):
-                        db["users"][target_user]["blocked"] = not is_blocked
-                        save_db(db)
-                        st.rerun()
-                else:
-                    st.caption("No students registered yet.")
 
     # ---------------- ANNOUNCEMENTS ----------------
     with tab_announce:
@@ -257,6 +196,8 @@ def render_admin_dashboard(db):
                 else:
                     st.success(f"**Correct Diagnosis:** {q_data['answer']}")
                     _render_results_table(qs, q_data, db)
+                    st.divider()
+                    render_leaderboard(db)
 
                     if qs.get("auto_mode"):
                         st.caption("Advancing to the next question automatically...")
@@ -272,75 +213,43 @@ def render_admin_dashboard(db):
     with tab_poll:
         if not db["polls"]["active"]:
             st.subheader("Create a Poll")
-            poll_mode = st.radio(
-                "Poll type",
-                ["🧠 Tracking Poll (Yes / No / Partially)", "✏️ Custom Poll"],
-                horizontal=True,
-            )
+            poll_q = st.text_input("Poll Question", key="poll_q")
 
-            if poll_mode.startswith("🧠"):
-                track_metric = st.selectbox(
-                    "Which metric should this poll track?",
-                    ["Revision", "Tests", "DPPs"],
-                    key="tracking_metric_select",
-                )
-                default_q = f"Did you complete today's {track_metric.lower()}?"
-                poll_q = st.text_input("Poll Question", value=default_q, key="tracking_poll_q")
-                st.caption(f"Options are fixed: {', '.join(TRACKING_OPTIONS)}. Any vote increases '{track_metric}' by 1 for that student, regardless of which option they pick.")
+            if "poll_options" not in st.session_state:
+                st.session_state.poll_options = ["", ""]
 
-                if st.button("Start Tracking Poll", type="primary"):
-                    if poll_q.strip():
-                        start_tracking_poll(db, track_metric, poll_q.strip())
-                        st.rerun()
-                    else:
-                        st.warning("Add a poll question.")
+            st.write("**Options**")
+            for i in range(len(st.session_state.poll_options)):
+                col_opt, col_del = st.columns([5, 1])
+                with col_opt:
+                    st.session_state.poll_options[i] = st.text_input(
+                        f"Option {i + 1}",
+                        value=st.session_state.poll_options[i],
+                        key=f"poll_opt_{i}",
+                        label_visibility="collapsed",
+                        placeholder=f"Option {i + 1}",
+                    )
+                with col_del:
+                    if len(st.session_state.poll_options) > 2:
+                        if st.button("🗑️", key=f"poll_opt_del_{i}"):
+                            st.session_state.poll_options.pop(i)
+                            st.rerun()
 
-            else:
-                poll_q = st.text_input("Poll Question", key="custom_poll_q")
+            if st.button("➕ Add option"):
+                st.session_state.poll_options.append("")
+                st.rerun()
 
-                if "custom_poll_options" not in st.session_state:
-                    st.session_state.custom_poll_options = ["", ""]
-
-                st.write("**Options**")
-                for i in range(len(st.session_state.custom_poll_options)):
-                    col_opt, col_del = st.columns([5, 1])
-                    with col_opt:
-                        st.session_state.custom_poll_options[i] = st.text_input(
-                            f"Option {i + 1}",
-                            value=st.session_state.custom_poll_options[i],
-                            key=f"custom_opt_{i}",
-                            label_visibility="collapsed",
-                            placeholder=f"Option {i + 1}",
-                        )
-                    with col_del:
-                        if len(st.session_state.custom_poll_options) > 2:
-                            if st.button("🗑️", key=f"custom_opt_del_{i}"):
-                                st.session_state.custom_poll_options.pop(i)
-                                st.rerun()
-
-                if st.button("➕ Add option"):
-                    st.session_state.custom_poll_options.append("")
+            st.divider()
+            if st.button("Start Poll", type="primary"):
+                valid_opts = [o for o in st.session_state.poll_options if o.strip()]
+                if poll_q.strip() and len(valid_opts) >= 2:
+                    start_poll(db, poll_q.strip(), valid_opts)
+                    st.session_state.poll_options = ["", ""]
                     st.rerun()
-
-                st.divider()
-                is_smart = st.checkbox("🧠 Also track a student metric on this custom poll")
-                track_metric = None
-                if is_smart:
-                    track_metric = st.selectbox("Which metric should answering this poll increase?", ["Revision", "Tests", "DPPs"], key="custom_smart_metric")
-                    st.info(f"When a student votes, their '{track_metric}' score increases by 1.")
-
-                if st.button("Start Custom Poll", type="primary"):
-                    valid_opts = [o for o in st.session_state.custom_poll_options if o.strip()]
-                    if poll_q.strip() and len(valid_opts) >= 2:
-                        start_poll(db, poll_q.strip(), valid_opts, is_smart, track_metric)
-                        st.session_state.custom_poll_options = ["", ""]
-                        st.rerun()
-                    else:
-                        st.warning("Add a question and at least 2 non-empty options.")
+                else:
+                    st.warning("Add a question and at least 2 non-empty options.")
         else:
             st.info(f"**Active Poll:** {db['polls']['question']}")
-            if db["polls"].get("is_smart"):
-                st.success(f"🧠 Smart tracking active: +1 {db['polls']['track_metric']} per vote.")
 
             for opt in db["polls"]["options"]:
                 votes = list(db["polls"]["votes"].values()).count(opt)
@@ -349,26 +258,15 @@ def render_admin_dashboard(db):
                 end_poll(db)
                 st.rerun()
 
-    # ---------------- LEADERBOARD ----------------
+    # ---------------- PERFORMANCE TRACKING ----------------
     with tab_leaders:
-        st.subheader("Comprehensive Medical Charts")
+        st.subheader("Performance Tracking")
         if st.button("Start New Shift (zeros session scores only)"):
             db["current_session_scores"] = {u: 0 for u in db["users"] if db["users"][u]["role"] == "student"}
             save_db(db)
             st.success("Session scores reset!")
 
-        students = {k: v for k, v in db["users"].items() if v["role"] == "student"}
-        if not students:
-            st.caption("No students registered yet.")
-        for s_name, data in sorted(students.items(), key=lambda kv: -kv[1].get("lifetime_score", 0)):
-            with st.container(border=True):
-                st.markdown(f"#### 🩺 {s_name.capitalize()}")
-                m = data.get("metrics", {})
-                c1, c2, c3, c4 = st.columns(4)
-                c1.markdown(f"<div class='metric-tile'><div class='val'>{data.get('lifetime_score', 0)}</div><div class='lbl'>Quiz Pts</div></div>", unsafe_allow_html=True)
-                c2.markdown(f"<div class='metric-tile'><div class='val'>{m.get('Revision',0)}</div><div class='lbl'>Revision</div></div>", unsafe_allow_html=True)
-                c3.markdown(f"<div class='metric-tile'><div class='val'>{m.get('Tests',0)}</div><div class='lbl'>Tests</div></div>", unsafe_allow_html=True)
-                c4.markdown(f"<div class='metric-tile'><div class='val'>{m.get('DPPs',0)}</div><div class='lbl'>DPPs</div></div>", unsafe_allow_html=True)
+        render_leaderboard(db)
 
     # ---------------- LIBRARY ----------------
     with tab_library:
