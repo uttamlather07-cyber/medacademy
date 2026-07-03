@@ -12,9 +12,9 @@ Requires SUPABASE_URL and SUPABASE_KEY in .streamlit/secrets.toml (locally)
 or in Streamlit Cloud's Settings -> Secrets (when deployed). See README.md
 for the one-time Supabase project + table setup.
 
-NOTE: uploaded files (chat attachments, library PDFs) are handled
-separately by storage.py, which persists them in Supabase Storage — also
-survives Streamlit Cloud restarts, same as this JSON data does.
+NOTE: uploaded files (library PDFs) are handled separately by storage.py,
+which persists them in Supabase Storage — also survives Streamlit Cloud
+restarts, same as this JSON data does.
 """
 
 import time
@@ -52,9 +52,7 @@ def _default_db():
             "question_source": "ai",
             "bank_order": [],
         },
-        "chat": [],
-        "chat_enabled": True,
-        "polls": {"active": False, "question": "", "options": [], "votes": {}, "is_smart": False, "track_metric": None},
+        "polls": {"active": False, "question": "", "options": [], "votes": {}},
         "current_session_scores": {},
         "announcement": "",
         "announcement_time": 0,
@@ -66,9 +64,7 @@ def _default_db():
                 "lifetime_score": 0,
                 "last_seen": time.time(),
                 "blocked": False,
-                "metrics": {"Revision": 0, "Tests": 0, "DPPs": 0},
                 "avatar_color": "#6366f1",
-                "last_seen_chat_count": 0,
             }
         },
         "scores": {},
@@ -96,19 +92,7 @@ def upgrade_db(data: dict) -> dict:
         uinfo.setdefault("lifetime_score", data.get("scores", {}).get(uname, 0))
         uinfo.setdefault("last_seen", time.time())
         uinfo.setdefault("blocked", False)
-        uinfo.setdefault("metrics", {"Revision": 0, "Tests": 0, "DPPs": 0})
         uinfo.setdefault("avatar_color", "#6366f1")
-        uinfo.setdefault("last_seen_chat_count", 0)
-        for m in ("Revision", "Tests", "DPPs"):
-            uinfo["metrics"].setdefault(m, 0)
-
-    # chat messages upgrade (add type/attachment fields to old text-only
-    # messages; storage_path replaces the old local-disk file_path field)
-    for msg in data.get("chat", []):
-        msg.setdefault("type", "text")
-        msg.setdefault("storage_path", None)
-        msg.setdefault("file_name", None)
-        msg.setdefault("id", str(msg.get("time", time.time())))
 
     return data
 
@@ -146,20 +130,6 @@ def load_db() -> dict:
 def save_db(data: dict):
     client = _get_client()
     client.table(TABLE).update({"data": data, "updated_at": "now()"}).eq("id", ROW_ID).execute()
-
-
-def append_chat_message(msg: dict):
-    """Appends a single chat message atomically, via a Postgres function
-    (append_chat_message SQL RPC — see README/setup notes) instead of
-    load-modify-save. This avoids a race condition: with autorefresh
-    polling every few seconds, two people's load_db() -> save_db() cycles
-    can overlap, and whichever save_db() finishes last would silently
-    overwrite the other's message (this is why messages sometimes needed
-    resending). The database itself appends to the chat array in one
-    atomic step, so concurrent sends from different users can't clobber
-    each other regardless of timing."""
-    client = _get_client()
-    client.rpc("append_chat_message", {"new_msg": msg}).execute()
 
 
 def register_user(username: str, user_data: dict) -> str:
