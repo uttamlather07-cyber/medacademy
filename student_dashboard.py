@@ -1,13 +1,12 @@
 """
 student_dashboard.py
-The student-facing view: live quiz/poll, staff room chat, personal chart.
+The student-facing view: live quiz/poll, personal chart.
 """
 
 import streamlit as st
 
 from database import save_db
-from chat import render_chat_messages, render_chat_composer, has_unread_messages, unread_message_count, mark_chat_seen
-from quiz import submit_answer, time_left
+from quiz import submit_answer, time_left, render_leaderboard
 from polls import cast_vote
 from styles import ecg_divider
 from library import render_library_browser
@@ -19,30 +18,7 @@ def render_student_dashboard(db):
     st.markdown(f"<h1 style='margin-top:4px;'>Welcome, {uname.capitalize()}</h1>", unsafe_allow_html=True)
     ecg_divider()
 
-    # ---------------- NEW MESSAGE NOTIFICATION ----------------
-    if has_unread_messages(db, uname):
-        count = unread_message_count(db, uname)
-        plural = "message" if count == 1 else "messages"
-        st.markdown(
-            f"<div class='announce-banner'>💬 {count} new {plural} in the Staff Room — open the "
-            f"'Staff Room' tab to read {'it' if count == 1 else 'them'}.</div>",
-            unsafe_allow_html=True,
-        )
-
-    tab_class, tab_chat, tab_stats, tab_library = st.tabs(["📝 Live Operating Room", "💬 Staff Room", "📊 My Medical Chart", "📚 Library"])
-
-    # ---------------- CHAT ----------------
-    with tab_chat:
-        # User is actively viewing chat now, so clear their unread badge.
-        mark_chat_seen(db, uname)
-
-        st.subheader("Live Class Chat")
-        chat_container = st.container(height=460, border=True)
-        with chat_container:
-            render_chat_messages(db["chat"], uname)
-
-        is_blocked = db["users"][uname].get("blocked", False)
-        render_chat_composer(db, uname, is_blocked=is_blocked, key_prefix="student")
+    tab_class, tab_stats, tab_library = st.tabs(["📝 Live Operating Room", "📊 My Medical Chart", "📚 Library"])
 
     # ---------------- LIVE CLASS ----------------
     with tab_class:
@@ -58,8 +34,6 @@ def render_student_dashboard(db):
                             st.rerun()
                 else:
                     st.success(f"You voted: {my_vote}. Waiting for CMO to close poll...")
-                    if db["polls"].get("is_smart"):
-                        st.info(f"✅ Your {db['polls']['track_metric']} tracker was updated!")
 
         if db["quiz_state"]["active"]:
             qs = db["quiz_state"]
@@ -139,6 +113,9 @@ def render_student_dashboard(db):
                         if voters:
                             st.write(f"**{opt}**: {', '.join(v.capitalize() for v in voters)}")
 
+                    st.divider()
+                    render_leaderboard(db, highlight_user=uname)
+
                     if qs.get("auto_mode"):
                         st.caption("⏭️ Next question is on its way...")
         else:
@@ -149,7 +126,6 @@ def render_student_dashboard(db):
     with tab_stats:
         my_session = db["current_session_scores"].get(uname, 0)
         my_lifetime = db["users"][uname].get("lifetime_score", 0)
-        m = db["users"][uname].get("metrics", {})
 
         st.markdown("### 🏆 Quiz Performance")
         col1, col2 = st.columns(2)
@@ -158,11 +134,8 @@ def render_student_dashboard(db):
         with col2:
             st.markdown(f"<div class='metric-tile'><div class='val'>{my_lifetime}</div><div class='lbl'>Lifetime Points</div></div>", unsafe_allow_html=True)
 
-        st.markdown("### 📈 Consistent Effort Tracking")
-        c1, c2, c3 = st.columns(3)
-        c1.markdown(f"<div class='metric-tile'><div class='val'>{m.get('Revision',0)}</div><div class='lbl'>Revisions Completed</div></div>", unsafe_allow_html=True)
-        c2.markdown(f"<div class='metric-tile'><div class='val'>{m.get('Tests',0)}</div><div class='lbl'>Tests Attempted</div></div>", unsafe_allow_html=True)
-        c3.markdown(f"<div class='metric-tile'><div class='val'>{m.get('DPPs',0)}</div><div class='lbl'>DPPs Solved</div></div>", unsafe_allow_html=True)
+        st.divider()
+        render_leaderboard(db, highlight_user=uname)
 
     # ---------------- LIBRARY ----------------
     with tab_library:
