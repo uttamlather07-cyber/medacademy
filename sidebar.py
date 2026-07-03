@@ -8,22 +8,10 @@ import streamlit as st
 
 from config import ONLINE_THRESHOLD_SECONDS
 from styles import pulse_dot_html
-from chat import has_unread_messages, unread_message_count
 
 
 def render_roster(db):
     with st.sidebar:
-        current_user = st.session_state.get("username", "")
-        if current_user and has_unread_messages(db, current_user):
-            count = unread_message_count(db, current_user)
-            st.markdown(
-                f"<div class='badge-pill' style='background:#e8465c;border-color:#e8465c;color:#fff;"
-                f"width:100%;box-sizing:border-box;justify-content:center;'>"
-                f"🔴 {count} new chat {'message' if count == 1 else 'messages'}</div>",
-                unsafe_allow_html=True,
-            )
-            st.write("")
-
         st.markdown("### 🏥 On-Duty Roster")
         st.divider()
 
