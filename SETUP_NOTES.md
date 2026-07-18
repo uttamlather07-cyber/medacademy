@@ -56,3 +56,51 @@ nothing in the rebuilt code imports them anymore.
 - Test the full-length test flow yourself end-to-end once (create a small
   5-question test, open it, take it as a second browser/incognito student
   account, submit, check the leaderboard) before your first real class.
+
+## 5. Permanent archive + unlimited reattempts + DPPs (latest update)
+
+**Nothing is ever deleted.** Every test and DPP you create stays in the
+database forever. Students can revisit and retake any of them — open or
+closed — as many times as they want. Only their single **best-scoring**
+attempt counts for the leaderboard and "Past Tests/DPPs" — older, worse
+attempts aren't individually kept (this app tracks best score, not a full
+attempt log), but retaking never loses the score they already banked.
+
+**DPPs are a new, separate type** alongside full-length Tests, created from
+the same "Create New" form (pick "DPP" instead of "Full-Length Timed
+Test"). The only functional difference: Tests run on one shared timed
+clock for the whole class; DPPs are untimed, so students can do them
+whenever, at their own pace. Everything else — permanent archive,
+unlimited best-score reattempts, review, leaderboard — works identically
+for both.
+
+**"Close"** on a test/DPP now only ends the shared live session (and
+auto-submits anyone still mid-test on a timed Test) — it does **not**
+delete or lock the test. Students can keep retaking it afterward,
+untimed, exactly like a DPP.
+
+**Existing tests you already created before this update** are migrated
+automatically the next time the app loads the database — no action
+needed. Each old submission's single score becomes its "best" attempt,
+and it becomes retakeable going forward.
+
+### Load / crash hardening that came with this update
+
+- `save_db()` now retries a couple of times with a short backoff before
+  giving up, instead of failing on the first blip. Every write in
+  `quiz.py` goes through a wrapper that catches a real (post-retry)
+  failure and shows a normal "try again" warning instead of crashing
+  the page.
+- **Answer-save batching**: while a student is taking a test/DPP, their
+  answers and marks are kept in the browser session and only written to
+  the database when they move to another question, mark for review, or
+  submit — plus a background autosave roughly every 20 seconds. Previously
+  every single option click wrote to Supabase immediately, which was the
+  single biggest source of database load with a full class answering
+  concurrently.
+- Fixed a real crash: the exam UI assumed there was always a countdown
+  clock running, which broke (`TypeError`) the moment a student retook a
+  closed test or attempted an untimed DPP. It now shows "Untimed"
+  correctly instead of crashing.
+- Closing a test/DPP no longer lets one corrupted student submission stop
+  the rest of the class from being graded.

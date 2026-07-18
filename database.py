@@ -89,6 +89,30 @@ def upgrade_db(data: dict) -> dict:
         uinfo.setdefault("blocked", False)
         uinfo.setdefault("avatar_color", "#6366f1")
 
+    # full_tests: add test_type (old tests predate DPPs, all were
+    # full-length timed tests) and migrate each submission to the
+    # best-score-reattempt shape (old submissions scored their one and
+    # only attempt directly on the record - that becomes sub["best"] so
+    # existing results aren't lost, and the student can now reattempt it).
+    for test in data.get("full_tests", {}).values():
+        test.setdefault("test_type", "test")
+        for sub in test.get("submissions", {}).values():
+            if "best" in sub:
+                continue  # already migrated
+            if sub.get("submitted_at") is not None and sub.get("score") is not None:
+                sub["best"] = {
+                    "answers": dict(sub.get("answers", {})),
+                    "score": sub["score"],
+                    "correct_count": sub.get("correct_count", 0),
+                    "wrong_count": sub.get("wrong_count", 0),
+                    "unattempted_count": sub.get("unattempted_count", 0),
+                    "started_at": sub.get("started_at", 0),
+                    "submitted_at": sub["submitted_at"],
+                }
+            else:
+                sub["best"] = None
+            sub.setdefault("attempt_count", 1 if sub.get("best") else 0)
+
     return data
 
 
@@ -122,9 +146,26 @@ def load_db() -> dict:
     return fresh
 
 
-def save_db(data: dict):
+def save_db(data: dict, max_attempts: int = 3):
+    """Writes the whole database blob. Retries a few times with a short
+    backoff before giving up - under concurrent classroom load, a single
+    write occasionally colliding with Supabase/network hiccups is normal
+    and shouldn't surface as a crash or a silently-lost answer/score.
+
+    Still raises DatabaseUnavailableError if every attempt fails, so
+    callers that need to know ("your test didn't submit, try again")
+    still can - it just no longer gives up after one flaky attempt."""
     client = _get_client()
-    client.table(TABLE).update({"data": data, "updated_at": "now()"}).eq("id", ROW_ID).execute()
+    last_error = None
+    for attempt in range(max_attempts):
+        try:
+            client.table(TABLE).update({"data": data, "updated_at": "now()"}).eq("id", ROW_ID).execute()
+            return
+        except Exception as e:
+            last_error = e
+            if attempt < max_attempts - 1:
+                time.sleep(0.4 * (attempt + 1))  # 0.4s, 0.8s backoff
+    raise DatabaseUnavailableError(str(last_error))
 
 
 def register_user(username: str, user_data: dict) -> str:

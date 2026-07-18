@@ -1,16 +1,16 @@
 """
 student_dashboard.py
 The student console: live quiz (read-only + answer submission), full-length
-timed test taking, and the leaderboard.
+timed test / DPP taking (with unlimited reattempts), and the leaderboard.
 
 CRITICAL - READ BEFORE ADDING ANY QUIZ-STATE CODE HERE:
 This file must be STRICTLY READ-ONLY with respect to shared quiz_state.
 The only quiz.py functions this file may call are:
     - submit_answer(db, username, choice)       - writes ONLY the caller's
       own answer, never touches anyone else's state
-    - start_full_test_attempt / save_full_test_answer / toggle_mark_for_review
-      / submit_full_test - all scoped to the caller's OWN submission record
-      inside test["submissions"][username], never anyone else's
+    - start_full_test_attempt / sync_full_test_progress / submit_full_test -
+      all scoped to the caller's OWN submission record inside
+      test["submissions"][username], never anyone else's
 
 This file must NEVER call advance_auto_quiz, lock_and_reveal, start_quiz,
 start_auto_quiz, start_bank_quiz, clear_quiz, create_full_test,
@@ -25,6 +25,13 @@ and overwriting each other's writes to the database - that's what crashed
 the app at question 2 with just 6 users. See quiz.py's module docstring
 for the complete explanation. Keeping this file read-only for shared state
 is not a style preference, it's the actual fix for that bug.
+
+ANSWER-SAVE BATCHING (load protection): while a student is working through
+a test/DPP, their in-progress answers/marks live in st.session_state and
+are only flushed to the database (sync_full_test_progress) when they move
+to another question, toggle a mark, or submit - not on every single radio
+click. This is the main defense against database load from a full class
+answering concurrently; see sync_full_test_progress's docstring in quiz.py.
 """
 
 import time
@@ -33,8 +40,9 @@ import streamlit as st
 
 from quiz import (
     submit_answer, time_left, is_time_up, render_leaderboard,
-    start_full_test_attempt, save_full_test_answer, toggle_mark_for_review,
-    submit_full_test, full_test_time_left, render_full_test_leaderboard,
+    start_full_test_attempt, sync_full_test_progress,
+    submit_full_test, full_test_time_left,
+    render_full_test_leaderboard,
 )
 from sidebar import render_nav, render_roster
 
@@ -54,58 +62,101 @@ def render_student_dashboard(db):
 
 
 # ========================================================================
-# FULL-LENGTH TIMED TESTS - the professional exam-taking experience
+# FULL-LENGTH TIMED TESTS + DPPs - the professional exam-taking experience
 # ========================================================================
+# EVERY test and DPP ever created stays here permanently - nothing is ever
+# deleted. A student can revisit any of them at any time and retake as
+# many times as they want; only their single best-scoring attempt counts
+# for the leaderboard and is shown as "Your best score" below.
 
 def _render_tests_page(db, username):
-    tests = db.get("full_tests", {})
-    open_tests = {tid: t for tid, t in tests.items() if t["status"] == "open"}
-    closed_tests = {tid: t for tid, t in tests.items() if t["status"] == "closed"}
+    all_tests = db.get("full_tests", {})
 
-    # If the student already started an open test, jump straight into it -
-    # avoids accidentally losing their place in a long exam to a stray rerun.
-    for test_id, test in open_tests.items():
-        if username in test["submissions"] and test["submissions"][username].get("submitted_at") is None:
+    # If the student already has an attempt in progress on anything that's
+    # still open, jump straight into it - avoids losing their place in a
+    # long exam to a stray rerun.
+    for test_id, test in all_tests.items():
+        if test["status"] != "open":
+            continue
+        sub = test["submissions"].get(username)
+        if sub is not None and sub.get("submitted_at") is None:
             _render_test_taking_ui(db, test_id, test, username)
             return
 
-    st.subheader("Available Tests")
+    type_choice = st.radio("Show", ["Tests", "DPPs"], horizontal=True, key="student_test_type_filter")
+    wanted_type = "test" if type_choice == "Tests" else "dpp"
+    tests = {tid: t for tid, t in all_tests.items() if t.get("test_type", "test") == wanted_type}
+
+    open_tests = {tid: t for tid, t in tests.items() if t["status"] == "open"}
+    closed_tests = {tid: t for tid, t in tests.items() if t["status"] == "closed"}
+    noun = "test" if wanted_type == "test" else "DPP"
+
+    st.subheader(f"Available {type_choice}")
     if not open_tests:
-        st.caption("No tests are open right now. Check back once your instructor opens one.")
+        st.caption(f"No {noun}s are open right now. Check back once your instructor opens one.")
     for test_id, test in open_tests.items():
-        with st.container(border=True):
+        _render_available_card(db, test_id, test, username, wanted_type)
+
+    if closed_tests:
+        st.divider()
+        st.subheader(f"Past {type_choice}")
+        st.caption("Nothing here ever disappears — revisit and retake any of these whenever you like.")
+        for test_id, test in sorted(closed_tests.items(), key=lambda kv: kv[1]["created_at"], reverse=True):
+            _render_past_card(db, test_id, test, username, wanted_type)
+
+
+def _render_available_card(db, test_id, test, username, wanted_type):
+    sub = test["submissions"].get(username)
+    best = sub.get("best") if sub else None
+    with st.container(border=True):
+        if wanted_type == "test":
             remaining = full_test_time_left(db, test_id)
             mins = int(remaining // 60) if remaining is not None else test["duration_minutes"]
             st.markdown(f"**{test['title']}**")
             st.caption(f"{len(test['questions'])} questions - {test['duration_minutes']} minutes - +{test['marks_correct']} / {test['marks_wrong']} marking")
             if remaining is not None and remaining <= 0:
-                st.caption("This test's time window has ended.")
-                continue
+                st.caption("This test's time window has ended, but it stays available under Past Tests to review and retake.")
+                return
             st.caption(f"~{mins} min left on the shared clock.")
-            if st.button("Start Test", key=f"start_{test_id}", type="primary"):
-                start_full_test_attempt(db, test_id, username)
-                st.rerun()
+        else:
+            st.markdown(f"**{test['title']}**")
+            st.caption(f"{len(test['questions'])} questions - untimed - +{test['marks_correct']} / {test['marks_wrong']} marking")
 
-    if closed_tests:
-        st.divider()
-        st.subheader("Past Tests")
-        for test_id, test in closed_tests.items():
-            sub = test["submissions"].get(username)
-            with st.container(border=True):
-                st.markdown(f"**{test['title']}**")
-                if sub and sub.get("submitted_at"):
-                    st.write(f"Your score: **{sub['score']}** - Correct: {sub['correct_count']} - Wrong: {sub['wrong_count']} - Unattempted: {sub['unattempted_count']}")
-                    with st.expander("Review your answers"):
-                        _render_test_review(test, sub)
-                    with st.expander("Leaderboard for this test"):
-                        render_full_test_leaderboard(test, highlight_user=username)
-                else:
-                    st.caption("You did not attempt this test.")
+        if best is not None:
+            st.caption(f"Your best score so far: **{best['score']}** ({sub.get('attempt_count', 0)} attempt(s))")
+
+        button_label = "Retake" if best is not None else "Start"
+        if st.button(f"{button_label} {'Test' if wanted_type == 'test' else 'DPP'}", key=f"start_{test_id}", type="primary"):
+            start_full_test_attempt(db, test_id, username)
+            st.rerun()
 
 
-def _render_test_review(test, sub):
+def _render_past_card(db, test_id, test, username, wanted_type):
+    sub = test["submissions"].get(username)
+    best = sub.get("best") if sub else None
+    with st.container(border=True):
+        st.markdown(f"**{test['title']}**")
+        if best is not None:
+            st.write(
+                f"Your best score: **{best['score']}** - Correct: {best['correct_count']} - "
+                f"Wrong: {best['wrong_count']} - Unattempted: {best['unattempted_count']} "
+                f"- ({sub.get('attempt_count', 0)} attempt(s))"
+            )
+            with st.expander("Review your best attempt"):
+                _render_test_review(test, best)
+            with st.expander("Leaderboard"):
+                render_full_test_leaderboard(test, highlight_user=username)
+        else:
+            st.caption("You haven't attempted this one yet.")
+
+        if st.button(f"{'Retake' if best is not None else 'Attempt'} anytime", key=f"retake_closed_{test_id}"):
+            start_full_test_attempt(db, test_id, username)
+            st.rerun()
+
+
+def _render_test_review(test, best):
     for i, q in enumerate(test["questions"]):
-        chosen = sub["answers"].get(str(i))
+        chosen = best["answers"].get(str(i))
         correct = q["answer"]
         st.markdown(f"**Q{i + 1}.** {q['question']}")
         for opt in q["options"]:
@@ -121,41 +172,73 @@ def _render_test_review(test, sub):
         st.divider()
 
 
+def _get_working_copy(sub, test_id):
+    """Local (session_state) working copy of this attempt's answers/marks.
+    Every click updates ONLY this in-memory copy; sync_full_test_progress
+    flushes it to the database at natural checkpoints (Next/Previous/
+    Mark/Submit) instead of on every single radio click - see the module
+    docstring for why this matters under classroom-scale concurrent load."""
+    key = f"working_{test_id}"
+    if key not in st.session_state:
+        st.session_state[key] = {
+            "answers": dict(sub["answers"]),
+            "marked_for_review": list(sub.get("marked_for_review", [])),
+        }
+    return st.session_state[key]
+
+
+def _flush_working_copy(db, test_id, username):
+    working = st.session_state.get(f"working_{test_id}")
+    if working is not None:
+        sync_full_test_progress(db, test_id, username, working["answers"], working["marked_for_review"])
+
+
 def _render_test_taking_ui(db, test_id, test, username):
-    """The signature exam experience: sticky top bar with shared countdown
-    + live answered/marked/unattempted counts, a question palette to jump
+    """The signature exam experience: sticky top bar (with a shared
+    countdown for timed Tests, or a plain "untimed" label for DPPs and any
+    test being retaken after its live window closed) + live
+    answered/marked/unattempted counts, a question palette to jump
     anywhere, and free navigation with no per-question timer - matches how
     a real full-length proctored exam actually works, unlike the live quiz
     below which is deliberately lockstep/synchronous."""
     sub = test["submissions"][username]
     questions = test["questions"]
     total = len(questions)
+    is_untimed = test.get("test_type") == "dpp" or test["status"] != "open"
 
     remaining = full_test_time_left(db, test_id)
     if remaining is not None and remaining <= 0:
+        _flush_working_copy(db, test_id, username)
         submit_full_test(db, test_id, username)
-        st.warning("Time's up - your test has been auto-submitted.")
+        st.session_state.pop(f"working_{test_id}", None)
+        st.warning("Time's up - your attempt has been auto-submitted.")
         time.sleep(1.5)
         st.rerun()
         return
+
+    working = _get_working_copy(sub, test_id)
 
     if f"qidx_{test_id}" not in st.session_state:
         st.session_state[f"qidx_{test_id}"] = 0
     current_idx = st.session_state[f"qidx_{test_id}"]
 
-    answered_count = len(sub["answers"])
-    marked_count = len(sub.get("marked_for_review", []))
+    answered_count = len(working["answers"])
+    marked_count = len(working["marked_for_review"])
     unattempted_count = total - answered_count
 
-    mins, secs = int(remaining // 60), int(remaining % 60)
-    urgent = remaining <= 300  # last 5 minutes
-    clock_class = "exam-bar-clock urgent" if urgent else "exam-bar-clock"
+    if remaining is not None:
+        mins, secs = int(remaining // 60), int(remaining % 60)
+        urgent = remaining <= 300  # last 5 minutes
+        clock_class = "exam-bar-clock urgent" if urgent else "exam-bar-clock"
+        clock_html = f'<div class="{clock_class}">{mins:02d}:{secs:02d}</div>'
+    else:
+        clock_html = '<div class="exam-bar-clock">Untimed</div>'
 
     st.markdown(
         f"""
         <div class="exam-bar">
             <div class="exam-bar-title">{html_lib.escape(test['title'])}</div>
-            <div class="{clock_class}">{mins:02d}:{secs:02d}</div>
+            {clock_html}
             <div class="exam-bar-stats">
                 <div class="exam-stat answered"><div class="n">{answered_count}</div><div class="l">Answered</div></div>
                 <div class="exam-stat marked"><div class="n">{marked_count}</div><div class="l">Marked</div></div>
@@ -165,6 +248,8 @@ def _render_test_taking_ui(db, test_id, test, username):
         """,
         unsafe_allow_html=True,
     )
+    if is_untimed and test.get("test_type") != "dpp":
+        st.caption("This test's live window has ended, but you're free to practice it now — self-paced, no clock, doesn't affect anyone else's result.")
 
     col_main, col_palette = st.columns([3, 1])
 
@@ -173,7 +258,7 @@ def _render_test_taking_ui(db, test_id, test, username):
         st.caption(f"Question {current_idx + 1} of {total}")
         st.markdown(f"### {html_lib.escape(q['question'])}")
 
-        existing_answer = sub["answers"].get(str(current_idx))
+        existing_answer = working["answers"].get(str(current_idx))
         choice = st.radio(
             "Choose an answer",
             q["options"],
@@ -182,30 +267,50 @@ def _render_test_taking_ui(db, test_id, test, username):
             label_visibility="collapsed",
         )
         if choice is not None and choice != existing_answer:
-            save_full_test_answer(db, test_id, username, current_idx, choice)
+            working["answers"][str(current_idx)] = choice  # local only - flushed on navigation below
+
+        # Periodic autosave: even if the student never clicks Next/Mark on
+        # this question (e.g. they pick an answer and then just sit on
+        # this screen), the app's existing autorefresh tick (every few
+        # seconds) still reruns this page - use that to flush at most once
+        # every ~20s per test, so a closed tab or dead connection never
+        # loses more than a few seconds of an answer that was already picked.
+        autosave_key = f"last_autosave_{test_id}"
+        now = time.time()
+        if now - st.session_state.get(autosave_key, 0) > 20:
+            _flush_working_copy(db, test_id, username)
+            st.session_state[autosave_key] = now
 
         st.write("")
         col_prev, col_mark, col_clear, col_next = st.columns(4)
         with col_prev:
             if st.button("Previous", disabled=current_idx == 0, use_container_width=True):
+                _flush_working_copy(db, test_id, username)
                 st.session_state[f"qidx_{test_id}"] = max(0, current_idx - 1)
                 st.rerun()
         with col_mark:
-            is_marked = current_idx in sub.get("marked_for_review", [])
+            is_marked = current_idx in working["marked_for_review"]
             if st.button("Unmark" if is_marked else "Mark for Review", use_container_width=True):
-                toggle_mark_for_review(db, test_id, username, current_idx)
+                if is_marked:
+                    working["marked_for_review"].remove(current_idx)
+                else:
+                    working["marked_for_review"].append(current_idx)
+                _flush_working_copy(db, test_id, username)
                 st.rerun()
         with col_clear:
             if st.button("Clear Answer", use_container_width=True, disabled=existing_answer is None):
-                save_full_test_answer(db, test_id, username, current_idx, None)
+                working["answers"].pop(str(current_idx), None)
+                _flush_working_copy(db, test_id, username)
                 st.rerun()
         with col_next:
             if st.button("Next", disabled=current_idx >= total - 1, use_container_width=True, type="primary"):
+                _flush_working_copy(db, test_id, username)
                 st.session_state[f"qidx_{test_id}"] = min(total - 1, current_idx + 1)
                 st.rerun()
 
         st.divider()
-        if st.button("Submit Test", type="primary", use_container_width=True):
+        if st.button("Submit", type="primary", use_container_width=True):
+            _flush_working_copy(db, test_id, username)
             st.session_state[f"confirm_submit_{test_id}"] = True
 
         if st.session_state.get(f"confirm_submit_{test_id}"):
@@ -213,8 +318,11 @@ def _render_test_taking_ui(db, test_id, test, username):
             col_yes, col_no = st.columns(2)
             with col_yes:
                 if st.button("Yes, Submit Now", type="primary", use_container_width=True):
+                    _flush_working_copy(db, test_id, username)
                     submit_full_test(db, test_id, username)
                     st.session_state.pop(f"confirm_submit_{test_id}", None)
+                    st.session_state.pop(f"working_{test_id}", None)
+                    st.session_state.pop(f"qidx_{test_id}", None)
                     st.rerun()
             with col_no:
                 if st.button("Keep Working", use_container_width=True):
@@ -231,8 +339,8 @@ def _render_test_taking_ui(db, test_id, test, username):
                 idx = row_start + offset
                 if idx >= total:
                     continue
-                is_answered = str(idx) in sub["answers"]
-                is_marked = idx in sub.get("marked_for_review", [])
+                is_answered = str(idx) in working["answers"]
+                is_marked = idx in working["marked_for_review"]
                 is_current = idx == current_idx
                 if is_current:
                     label = f"[{idx + 1}]"
@@ -244,6 +352,7 @@ def _render_test_taking_ui(db, test_id, test, username):
                     label = str(idx + 1)
                 with col:
                     if st.button(label, key=f"pal_{test_id}_{idx}", use_container_width=True):
+                        _flush_working_copy(db, test_id, username)
                         st.session_state[f"qidx_{test_id}"] = idx
                         st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)

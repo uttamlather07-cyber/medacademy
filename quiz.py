@@ -57,8 +57,23 @@ import uuid
 
 import streamlit as st
 
-from database import save_db
+from database import save_db, DatabaseUnavailableError
 from ai_providers import complete_with_rotation, AllProvidersExhaustedError
+
+
+def _safe_save(db) -> bool:
+    """save_db() now retries internally (see database.py) but can still
+    raise DatabaseUnavailableError if every retry fails - e.g. a real
+    outage, not just a blip. Every write in this file goes through this
+    wrapper instead of calling save_db directly, so a bad moment for
+    Supabase shows the student/admin a normal warning ("try again") rather
+    than an unhandled exception crashing their page mid-quiz/mid-test."""
+    try:
+        save_db(db)
+        return True
+    except DatabaseUnavailableError:
+        st.warning("Couldn't save just now - connection hiccup. Please try that action again in a few seconds.")
+        return False
 
 
 # ----------------------------------------------------------------------
@@ -346,13 +361,13 @@ def start_quiz(db, q_data: dict, timer_seconds: int = 0):
         "timer_seconds": timer_seconds,
         "question_start_time": time.time() if timer_seconds else 0,
     })
-    save_db(db)
+    _safe_save(db)
 
 
 def clear_quiz(db):
     """ADMIN-ONLY - see module docstring."""
     db["quiz_state"] = _empty_quiz_state()
-    save_db(db)
+    _safe_save(db)
 
 
 # ----------------------------------------------------------------------
@@ -380,7 +395,7 @@ def start_auto_quiz(db, subject: str, topic: str, total_questions: int, timer_se
         "current_index": 1,
         "question_source": "ai",
     })
-    save_db(db)
+    _safe_save(db)
 
 
 def start_bank_quiz(db, bank_questions: list, timer_seconds: int, num_questions: int = None):
@@ -405,7 +420,7 @@ def start_bank_quiz(db, bank_questions: list, timer_seconds: int, num_questions:
         "question_source": "bank",
         "bank_order": order,
     })
-    save_db(db)
+    _safe_save(db)
 
 
 def advance_auto_quiz(db):
@@ -439,7 +454,7 @@ def advance_auto_quiz(db):
     qs["revealed"] = False
     qs["question_start_time"] = time.time()
     qs["current_index"] += 1
-    save_db(db)
+    _safe_save(db)
 
 
 def time_left(db) -> float:
@@ -465,7 +480,7 @@ def submit_answer(db, username: str, choice: str):
     if qs.get("timer_seconds"):
         elapsed = time.time() - qs.get("question_start_time", time.time())
         qs["answer_times"][username] = round(max(0, elapsed), 1)
-    save_db(db)
+    _safe_save(db)
 
 
 def lock_and_reveal(db):
@@ -481,74 +496,111 @@ def lock_and_reveal(db):
             db["current_session_scores"][student] = db["current_session_scores"].get(student, 0) - 1
             db["users"][student]["lifetime_score"] -= 1
     db["quiz_state"]["revealed"] = True
-    save_db(db)
+    _safe_save(db)
 
 
 # ----------------------------------------------------------------------
-# FULL-LENGTH TIMED TESTS (mock exams / PYQ sets - professional exam UX)
+# FULL-LENGTH TIMED TESTS + DPPs (mock exams / daily practice - professional
+# exam UX, PERMANENT ARCHIVE, unlimited reattempts)
 # ----------------------------------------------------------------------
 # Fundamentally different model from the live quiz above:
 #   - The ENTIRE question set is generated up front, before the test opens
 #     to students - nothing is generated live while a student is sitting
 #     the test, so a slow AI call can never block or time out a student
 #     mid-exam.
-#   - One shared clock (opened_at + duration_minutes), but NO per-question
-#     timer - a student can navigate freely between all N questions, mark
-#     for review, change answers, in any order, until the shared clock
-#     runs out or they submit.
+#   - One shared clock (opened_at + duration_minutes) for full-length
+#     Tests. DPPs (test_type="dpp") are untimed by design - no shared
+#     clock, no per-question timer - so a student can practice a DPP at
+#     3am on their own schedule, not just during a live window.
 #   - Each student's answers/navigation state are tracked PER-STUDENT
 #     (test["submissions"][username]), never shared - unlike the live
 #     quiz's single shared question_data, because every student works
 #     through the same fixed paper independently and asynchronously.
-#   - Scoring happens once, on submit (or when the clock expires), not
-#     per-question - matches how a real proctored exam is graded.
+#   - PERMANENT ARCHIVE + UNLIMITED REATTEMPTS: nothing in full_tests is
+#     ever deleted, so every test/DPP ever run stays available forever for
+#     students to revisit. A student can retake the same test/DPP as many
+#     times as they want - each finished attempt is graded, but only the
+#     BEST-SCORING attempt is kept as sub["best"] (shown on leaderboards
+#     and in "Past Tests"). Older attempts are not individually retained
+#     (this app tracks best score, not a full attempt-by-attempt log) -
+#     the in-progress attempt fields (answers/marked_for_review/started_at)
+#     reset cleanly on every new attempt so retaking never corrupts the
+#     best score already banked.
 
 def create_full_test(db, title: str, questions: list, duration_minutes: int,
-                      marks_correct: float = 4, marks_wrong: float = -1) -> str:
-    """ADMIN-ONLY. Registers a new full-length test (questions already
-    generated/collected by the caller). Created in "draft" status so the
-    admin can review before students can see it - open_full_test activates it."""
+                      marks_correct: float = 4, marks_wrong: float = -1,
+                      test_type: str = "test") -> str:
+    """ADMIN-ONLY. Registers a new full-length test or DPP (questions
+    already generated/collected by the caller). Created in "draft" status
+    so the admin can review before students can see it - open_full_test
+    activates it.
+
+    test_type: "test" (full-length, shared timed clock) or "dpp" (Daily
+    Practice Problem - untimed, no shared clock, students work through it
+    at their own pace whenever it's open). Both types share every other
+    mechanic below: permanent archive, unlimited best-score reattempts,
+    leaderboard, review."""
     test_id = uuid.uuid4().hex[:10]
     db.setdefault("full_tests", {})
     db["full_tests"][test_id] = {
         "id": test_id,
         "title": title,
+        "test_type": test_type,  # "test" or "dpp"
         "questions": questions,  # [{question, options, answer, explanation}, ...]
-        "duration_minutes": duration_minutes,
+        "duration_minutes": duration_minutes,  # DPPs: still stored, just not clocked against students
         "marks_correct": marks_correct,
         "marks_wrong": marks_wrong,
         "status": "draft",  # draft -> open -> closed
         "opened_at": None,
         "created_at": time.time(),
-        "submissions": {},  # username -> {answers, marked_for_review, started_at, submitted_at, score, ...}
+        "submissions": {},  # username -> {answers, marked_for_review, started_at, submitted_at, best: {...} or None}
     }
-    save_db(db)
+    _safe_save(db)
     return test_id
 
 
 def open_full_test(db, test_id: str):
-    """ADMIN-ONLY. Makes the test visible/attemptable to students and
-    starts its shared countdown clock."""
+    """ADMIN-ONLY. Makes the test/DPP visible/attemptable to students. For
+    a timed Test this also starts the shared countdown clock; DPPs ignore
+    the clock entirely (untimed by design) so they stay attemptable
+    indefinitely once opened - and since nothing is ever deleted, closing
+    one later just stops NEW attempts, past results and the archive stay
+    intact forever either way."""
     test = db["full_tests"][test_id]
     test["status"] = "open"
     test["opened_at"] = time.time()
-    save_db(db)
+    _safe_save(db)
 
 
 def close_full_test(db, test_id: str):
-    """ADMIN-ONLY. Ends the test early for everyone - any student still
-    mid-attempt is auto-submitted with whatever they had filled in so far."""
+    """ADMIN-ONLY. Stops new attempts. For a timed Test, any student still
+    mid-attempt is auto-submitted with whatever they had filled in so far.
+    A single malformed/corrupt submission can no longer abort grading for
+    everyone else - each student's finalize is isolated so one bad record
+    doesn't block the rest.
+
+    The test/DPP itself is NEVER deleted - closing only stops new
+    attempts. Students can still browse it forever under Past
+    Tests/DPPs, and it stays fully reviewable (own answers + explanations)."""
     test = db["full_tests"][test_id]
     for username, sub in test["submissions"].items():
         if sub.get("submitted_at") is None:
-            _grade_and_finalize_submission(test, sub)
+            try:
+                _grade_and_finalize_submission(test, sub)
+            except Exception:
+                # Don't let one corrupt submission stop the rest of the
+                # class from being graded and the test from closing.
+                continue
     test["status"] = "closed"
-    save_db(db)
+    _safe_save(db)
 
 
 def full_test_time_left(db, test_id: str) -> float:
-    """Seconds remaining on the shared test clock. None if not open."""
+    """Seconds remaining on the shared test clock. None if not open, or if
+    this is an untimed DPP (DPPs never have a countdown)."""
     test = db["full_tests"][test_id]
+    if test.get("test_type") == "dpp":
+        return None
     if test["status"] != "open" or not test.get("opened_at"):
         return None
     elapsed = time.time() - test["opened_at"]
@@ -556,36 +608,77 @@ def full_test_time_left(db, test_id: str) -> float:
     return max(0, remaining)
 
 
-def start_full_test_attempt(db, test_id: str, username: str):
-    """Safe to call from a student's own session. Creates that student's
-    per-user submission record the first time they open the test - safe
-    to call repeatedly (won't reset progress if they already started)."""
-    test = db["full_tests"][test_id]
-    if username in test["submissions"]:
-        return  # already started - don't wipe their progress
-    test["submissions"][username] = {
+def _fresh_attempt_fields() -> dict:
+    return {
         "answers": {},            # question_index (str) -> chosen option text
         "marked_for_review": [],  # list of question_index (int)
         "started_at": time.time(),
         "submitted_at": None,
-        "score": None,
-        "correct_count": None,
-        "wrong_count": None,
-        "unattempted_count": None,
     }
-    save_db(db)
+
+
+def start_full_test_attempt(db, test_id: str, username: str):
+    """Safe to call from a student's own session. Creates that student's
+    per-user submission record the first time they open the test/DPP.
+
+    UNLIMITED REATTEMPTS: if the student already has a finished attempt
+    (submitted_at is set), this starts a brand new attempt - the previous
+    finished attempt's score has already been folded into sub["best"] (see
+    submit_full_test), so nothing is lost by resetting the working fields.
+    If they have an attempt already IN PROGRESS, this is a no-op so a
+    stray rerun never wipes their unsaved progress."""
+    test = db["full_tests"][test_id]
+    sub = test["submissions"].get(username)
+
+    if sub is not None and sub.get("submitted_at") is None:
+        return  # already mid-attempt - don't wipe progress
+
+    fresh = _fresh_attempt_fields()
+    if sub is not None:
+        fresh["best"] = sub.get("best")  # carry the best score forward across reattempts
+        fresh["attempt_count"] = sub.get("attempt_count", 0)
+    else:
+        fresh["best"] = None
+        fresh["attempt_count"] = 0
+    test["submissions"][username] = fresh
+    _safe_save(db)
 
 
 def save_full_test_answer(db, test_id: str, username: str, question_index: int, choice: str):
     """Safe to call from a student's own session - only ever touches that
     student's OWN submission dict, never anyone else's, so concurrent
-    students answering simultaneously never collide."""
+    students answering simultaneously never collide.
+
+    NOTE ON LOAD: prefer sync_full_test_progress() from the UI layer for
+    normal answer-saving during a test - it batches many answer changes
+    into one write instead of hitting the database on every click, which
+    matters a lot once a whole class is answering concurrently. This
+    function is still here for the immediate single-write case (e.g. the
+    final flush on Submit)."""
     test = db["full_tests"][test_id]
     sub = test["submissions"].get(username)
     if not sub or sub.get("submitted_at") is not None:
         return
     sub["answers"][str(question_index)] = choice
-    save_db(db)
+    _safe_save(db)
+
+
+def sync_full_test_progress(db, test_id: str, username: str, answers: dict, marked_for_review: list):
+    """Batched write: overwrites this student's ENTIRE answers dict and
+    marked-for-review list in one save, instead of one database write per
+    option click. The UI layer keeps live edits in st.session_state and
+    calls this only at natural checkpoints (moving to another question,
+    submitting, or a periodic autosave) - cuts database writes from
+    'every click' to a small handful per test attempt, which is the
+    single biggest thing protecting the app from load-related slowdowns
+    during a live class taking a test together."""
+    test = db["full_tests"][test_id]
+    sub = test["submissions"].get(username)
+    if not sub or sub.get("submitted_at") is not None:
+        return
+    sub["answers"] = dict(answers)
+    sub["marked_for_review"] = list(marked_for_review)
+    _safe_save(db)
 
 
 def toggle_mark_for_review(db, test_id: str, username: str, question_index: int):
@@ -599,11 +692,15 @@ def toggle_mark_for_review(db, test_id: str, username: str, question_index: int)
         marked.remove(question_index)
     else:
         marked.append(question_index)
-    save_db(db)
+    _safe_save(db)
 
 
 def _grade_and_finalize_submission(test: dict, sub: dict):
-    """Pure in-memory grading - caller is responsible for save_db()."""
+    """Pure in-memory grading - caller is responsible for save_db().
+    Grades the CURRENT working attempt, then folds it into sub["best"] if
+    it beats (or is the first-ever) attempt - so sub["best"] always holds
+    the single highest-scoring attempt this student has ever made on this
+    test/DPP, no matter how many times they retake it."""
     questions = test["questions"]
     correct = wrong = unattempted = 0
     for i, q in enumerate(questions):
@@ -615,35 +712,51 @@ def _grade_and_finalize_submission(test: dict, sub: dict):
         else:
             wrong += 1
     score = correct * test["marks_correct"] + wrong * test["marks_wrong"]
-    sub["score"] = score
-    sub["correct_count"] = correct
-    sub["wrong_count"] = wrong
-    sub["unattempted_count"] = unattempted
-    sub["submitted_at"] = time.time()
+    submitted_at = time.time()
+
+    this_attempt = {
+        "answers": dict(sub["answers"]),
+        "score": score,
+        "correct_count": correct,
+        "wrong_count": wrong,
+        "unattempted_count": unattempted,
+        "started_at": sub["started_at"],
+        "submitted_at": submitted_at,
+    }
+
+    previous_best = sub.get("best")
+    if previous_best is None or score > previous_best["score"]:
+        sub["best"] = this_attempt
+
+    sub["attempt_count"] = sub.get("attempt_count", 0) + 1
+    sub["submitted_at"] = submitted_at  # marks the CURRENT attempt as finished
 
 
 def submit_full_test(db, test_id: str, username: str):
     """Safe to call from a student's own session - grades and finalizes
-    ONLY that student's own submission. Idempotent: calling twice (e.g. a
-    double-click) doesn't re-grade or overwrite an already-submitted
-    attempt."""
+    ONLY that student's own submission, updating their best score if this
+    attempt beat it. Idempotent: calling twice (e.g. a double-click)
+    doesn't re-grade or overwrite an already-submitted attempt."""
     test = db["full_tests"][test_id]
     sub = test["submissions"].get(username)
     if not sub or sub.get("submitted_at") is not None:
         return
     _grade_and_finalize_submission(test, sub)
-    save_db(db)
+    _safe_save(db)
 
 
 def get_full_test_leaderboard(test: dict) -> list:
     """Ranked list of (username, score, correct, wrong, unattempted,
-    time_taken_seconds) for everyone who has submitted this test."""
+    time_taken_seconds) using each student's BEST-EVER attempt on this
+    test/DPP - so retaking it to improve your score is reflected here,
+    not just your latest attempt."""
     rows = []
     for username, sub in test["submissions"].items():
-        if sub.get("submitted_at") is None:
+        best = sub.get("best")
+        if best is None:
             continue
-        time_taken = sub["submitted_at"] - sub["started_at"]
-        rows.append((username, sub["score"], sub["correct_count"], sub["wrong_count"], sub["unattempted_count"], time_taken))
+        time_taken = best["submitted_at"] - best["started_at"]
+        rows.append((username, best["score"], best["correct_count"], best["wrong_count"], best["unattempted_count"], time_taken))
     rows.sort(key=lambda r: (-r[1], r[5]))  # highest score first, tie-break by faster time
     return rows
 
