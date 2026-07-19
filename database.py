@@ -55,6 +55,7 @@ def _default_db():
             "bank_order": [],
         },
         "full_tests": {},
+        "question_library": {},  # question_id -> {question, options, answer, explanation, subject, topic, difficulty, source, pyq_style, saved_at, saved_by}
         "current_session_scores": {},
         "users": {
             "admin": {
@@ -82,36 +83,24 @@ def upgrade_db(data: dict) -> dict:
     for k, v in defaults["quiz_state"].items():
         data["quiz_state"].setdefault(k, v)
 
+    # MIGRATION: full_tests submissions used to be ONE dict per student
+    # (single attempt ever). Now it's a LIST of attempt dicts, so students
+    # can retake a test multiple times with each attempt scored
+    # separately. Detect the old shape (a dict with a "started_at" key,
+    # rather than a list) and wrap it in a one-item list so existing
+    # historical attempts aren't lost when this upgrade runs.
+    for test in data.get("full_tests", {}).values():
+        test.setdefault("submissions", {})
+        for username, sub in list(test["submissions"].items()):
+            if isinstance(sub, dict):
+                test["submissions"][username] = [sub]
+
     # per-user upgrades
     for uname, uinfo in data.get("users", {}).items():
         uinfo.setdefault("lifetime_score", data.get("scores", {}).get(uname, 0))
         uinfo.setdefault("last_seen", time.time())
         uinfo.setdefault("blocked", False)
         uinfo.setdefault("avatar_color", "#6366f1")
-
-    # full_tests: add test_type (old tests predate DPPs, all were
-    # full-length timed tests) and migrate each submission to the
-    # best-score-reattempt shape (old submissions scored their one and
-    # only attempt directly on the record - that becomes sub["best"] so
-    # existing results aren't lost, and the student can now reattempt it).
-    for test in data.get("full_tests", {}).values():
-        test.setdefault("test_type", "test")
-        for sub in test.get("submissions", {}).values():
-            if "best" in sub:
-                continue  # already migrated
-            if sub.get("submitted_at") is not None and sub.get("score") is not None:
-                sub["best"] = {
-                    "answers": dict(sub.get("answers", {})),
-                    "score": sub["score"],
-                    "correct_count": sub.get("correct_count", 0),
-                    "wrong_count": sub.get("wrong_count", 0),
-                    "unattempted_count": sub.get("unattempted_count", 0),
-                    "started_at": sub.get("started_at", 0),
-                    "submitted_at": sub["submitted_at"],
-                }
-            else:
-                sub["best"] = None
-            sub.setdefault("attempt_count", 1 if sub.get("best") else 0)
 
     return data
 
@@ -125,16 +114,27 @@ class DatabaseUnavailableError(Exception):
 
 
 def load_db() -> dict:
-    client = _get_client()
+    """Cached for a short TTL (see _load_db_cached below) — this is the
+    single biggest lag/unresponsiveness fix in this file. Previously EVERY
+    rerun (every button click, AND every autorefresh tick, for every
+    connected user) did a full network round-trip to Supabase here before
+    anything could render. With st_autorefresh firing every few seconds
+    for every user, that meant near-constant fetching even for a single
+    person, and it gets worse (not just proportionally, but in bursts) as
+    concurrent users' independent autorefresh timers land at overlapping
+    moments. A short cache means a click-triggered rerun that happens to
+    land within ~2s of another rerun (yours or another student's) reuses
+    the same fetched snapshot instead of re-fetching from scratch."""
     try:
-        result = client.table(TABLE).select("data").eq("id", ROW_ID).execute()
+        return _load_db_cached()
     except Exception as e:
-        # Do NOT return a fresh default here. Returning an empty DB looks
-        # identical to "this is a brand new install" to every caller, and
-        # app.py calls save_db() on every page load — so a single flaky
-        # connection would silently overwrite the real database with an
-        # empty one seconds later. Fail loudly instead.
         raise DatabaseUnavailableError(str(e))
+
+
+@st.cache_data(ttl=2, show_spinner=False)
+def _load_db_cached() -> dict:
+    client = _get_client()
+    result = client.table(TABLE).select("data").eq("id", ROW_ID).execute()
 
     if result.data:
         return upgrade_db(result.data[0]["data"])
@@ -146,26 +146,16 @@ def load_db() -> dict:
     return fresh
 
 
-def save_db(data: dict, max_attempts: int = 3):
-    """Writes the whole database blob. Retries a few times with a short
-    backoff before giving up - under concurrent classroom load, a single
-    write occasionally colliding with Supabase/network hiccups is normal
-    and shouldn't surface as a crash or a silently-lost answer/score.
-
-    Still raises DatabaseUnavailableError if every attempt fails, so
-    callers that need to know ("your test didn't submit, try again")
-    still can - it just no longer gives up after one flaky attempt."""
+def save_db(data: dict):
+    """Every write immediately invalidates the read cache above — without
+    this, a student who just answered a question or submitted a test
+    wouldn't see their own change reflected until the 2-second cache
+    window expired, which would look like the click 'didn't work' even
+    though it actually saved correctly. Correctness always wins over
+    avoiding one extra fetch here."""
     client = _get_client()
-    last_error = None
-    for attempt in range(max_attempts):
-        try:
-            client.table(TABLE).update({"data": data, "updated_at": "now()"}).eq("id", ROW_ID).execute()
-            return
-        except Exception as e:
-            last_error = e
-            if attempt < max_attempts - 1:
-                time.sleep(0.4 * (attempt + 1))  # 0.4s, 0.8s backoff
-    raise DatabaseUnavailableError(str(last_error))
+    client.table(TABLE).update({"data": data, "updated_at": "now()"}).eq("id", ROW_ID).execute()
+    _load_db_cached.clear()
 
 
 def register_user(username: str, user_data: dict) -> str:
