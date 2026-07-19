@@ -26,13 +26,12 @@ import time
 import html as html_lib
 import streamlit as st
 
-from database import save_db, DatabaseUnavailableError
+from database import save_db
 from quiz import (
     generate_question, start_quiz, lock_and_reveal, clear_quiz,
     start_auto_quiz, advance_auto_quiz, time_left, is_time_up,
     parse_pasted_questions, start_bank_quiz, render_leaderboard,
     create_full_test, open_full_test, close_full_test, render_full_test_leaderboard,
-    full_test_time_left,
 )
 from ai_providers import has_any_keys_configured, AllProvidersExhaustedError
 from sidebar import render_nav, render_roster
@@ -60,26 +59,18 @@ def render_admin_dashboard(db):
 
 
 # ========================================================================
-# FULL-LENGTH TIMED TESTS + DPPs
+# FULL-LENGTH TIMED TESTS
 # ========================================================================
-# Both are the same underlying "full_tests" record (test_type: "test" or
-# "dpp") and share every mechanic: generated up front, permanently
-# archived (nothing is ever deleted), and students can reattempt either
-# one as many times as they like - only their best score is kept for the
-# leaderboard. The only real difference is Tests run on one shared timed
-# clock for the whole class; DPPs are untimed so students can do them
-# whenever, at their own pace.
 
 def _render_full_test_builder(db):
-    st.subheader("Tests & DPPs")
+    st.subheader("Full-Length Timed Tests")
     st.caption(
-        "The complete question set is generated up front, before students can attempt it — "
-        "nothing is generated live, so a slow AI response can never block or time out anyone "
-        "mid-exam. Every test and DPP is kept permanently — students can revisit and retake "
-        "any of them at any time, and only their best score counts."
+        "The complete question set is generated up front, before the test opens — nothing "
+        "is generated live while students are attempting it, so a slow AI response can never "
+        "block or time out anyone mid-exam."
     )
 
-    tab_new, tab_manage = st.tabs(["Create New", "Manage Existing"])
+    tab_new, tab_manage = st.tabs(["Create a Test", "Manage Existing Tests"])
 
     with tab_new:
         _render_new_test_form(db)
@@ -90,18 +81,7 @@ def _render_full_test_builder(db):
 
 def _render_new_test_form(db):
     with st.container(border=True):
-        test_type = st.radio(
-            "Type",
-            ["test", "dpp"],
-            format_func=lambda t: "Full-Length Timed Test" if t == "test" else "DPP (Daily Practice Problems — untimed)",
-            horizontal=True,
-        )
-        is_dpp = test_type == "dpp"
-
-        title = st.text_input(
-            "Title",
-            placeholder="e.g. NEET Full Syllabus Mock #3" if not is_dpp else "e.g. DPP — Thermodynamics, 20 July",
-        )
+        title = st.text_input("Test title", placeholder="e.g. NEET Full Syllabus Mock #3")
 
         scope = st.radio(
             "Coverage",
@@ -138,29 +118,17 @@ def _render_new_test_form(db):
         with col_pyq:
             pyq_style = st.checkbox("PYQ-style phrasing", help="Write questions in the style of actual NEET Previous Year Questions (still AI-generated, not real past papers).")
 
-        default_count = DEFAULT_TEST_QUESTION_COUNT if not is_dpp else 10
-        min_count = 5 if not is_dpp else 1
-        max_count = 200 if not is_dpp else 50
-
-        if is_dpp:
+        col_count, col_dur = st.columns(2)
+        with col_count:
             question_count = st.number_input(
-                "Number of questions", min_value=min_count, max_value=max_count,
-                value=default_count, step=1,
+                "Number of questions", min_value=5, max_value=200,
+                value=DEFAULT_TEST_QUESTION_COUNT, step=5,
             )
-            duration_minutes = 0
-            st.caption("DPPs are untimed — no shared clock, students can work through it at their own pace.")
-        else:
-            col_count, col_dur = st.columns(2)
-            with col_count:
-                question_count = st.number_input(
-                    "Number of questions", min_value=min_count, max_value=max_count,
-                    value=default_count, step=5,
-                )
-            with col_dur:
-                duration_minutes = st.number_input(
-                    "Duration (minutes)", min_value=10, max_value=360,
-                    value=DEFAULT_TEST_DURATION_MINUTES, step=10,
-                )
+        with col_dur:
+            duration_minutes = st.number_input(
+                "Duration (minutes)", min_value=10, max_value=360,
+                value=DEFAULT_TEST_DURATION_MINUTES, step=10,
+            )
 
         col_correct, col_wrong = st.columns(2)
         with col_correct:
@@ -173,21 +141,18 @@ def _render_new_test_form(db):
         if not chapter_pairs:
             st.info("Select at least one chapter before generating.")
 
-        button_label = "Generate DPP" if is_dpp else "Generate Test"
-        if st.button(button_label, type="primary", disabled=not can_generate, use_container_width=True):
+        if st.button("Generate Test", type="primary", disabled=not can_generate, use_container_width=True):
             _generate_full_test(db, title.strip(), chapter_pairs, int(question_count),
                                  int(duration_minutes), difficulty, pyq_style,
-                                 marks_correct, marks_wrong, test_type)
+                                 marks_correct, marks_wrong)
 
 
 def _generate_full_test(db, title, chapter_pairs, question_count, duration_minutes,
-                         difficulty, pyq_style, marks_correct, marks_wrong, test_type="test"):
+                         difficulty, pyq_style, marks_correct, marks_wrong):
     """Generates every question up front with a live progress bar, then
-    creates the test/DPP in draft status (permanently, once created it is
-    never deleted). Questions are drawn round-robin across chapter_pairs
-    so counts are spread evenly, not skewed toward whichever chapter
-    happens to generate fastest."""
-    label = "DPP" if test_type == "dpp" else "test"
+    creates the test in draft status. Questions are drawn round-robin
+    across chapter_pairs so counts are spread evenly, not skewed toward
+    whichever chapter happens to generate fastest."""
     progress = st.progress(0.0, text=f"Generating question 1 of {question_count}...")
     questions = []
     failures = 0
@@ -215,40 +180,27 @@ def _generate_full_test(db, title, chapter_pairs, question_count, duration_minut
     progress.empty()
 
     if len(questions) < question_count:
-        st.warning(f"Generated {len(questions)} of {question_count} requested questions ({failures} failed). You can still create the {label} with what succeeded, or try again.")
+        st.warning(f"Generated {len(questions)} of {question_count} requested questions ({failures} failed). You can still create the test with what succeeded, or try again.")
 
     if not questions:
         st.error("No questions could be generated. Check your AI provider keys and try again.")
         return
 
-    test_id = create_full_test(db, title, questions, duration_minutes, marks_correct, marks_wrong, test_type)
-    st.success(f"{label.capitalize()} \"{title}\" created with {len(questions)} question(s) — go to **Manage Existing** to review and open it.")
+    test_id = create_full_test(db, title, questions, duration_minutes, marks_correct, marks_wrong)
+    st.success(f"Test \"{title}\" created with {len(questions)} question(s) — go to **Manage Existing Tests** to review and open it.")
     st.session_state[f"just_created_{test_id}"] = True
 
 
 def _render_existing_tests(db):
     tests = db.get("full_tests", {})
     if not tests:
-        st.caption("Nothing created yet.")
-        return
-
-    filter_choice = st.radio("Show", ["All", "Tests", "DPPs"], horizontal=True, key="manage_filter")
-    if filter_choice == "Tests":
-        tests = {tid: t for tid, t in tests.items() if t.get("test_type", "test") == "test"}
-    elif filter_choice == "DPPs":
-        tests = {tid: t for tid, t in tests.items() if t.get("test_type") == "dpp"}
-
-    if not tests:
-        st.caption("Nothing here yet.")
+        st.caption("No tests created yet.")
         return
 
     for test_id, test in sorted(tests.items(), key=lambda kv: kv[1]["created_at"], reverse=True):
-        is_dpp = test.get("test_type") == "dpp"
         with st.container(border=True):
             status_label = {"draft": "Draft", "open": "Open", "closed": "Closed"}[test["status"]]
-            type_label = "DPP" if is_dpp else "Test"
-            duration_label = "untimed" if is_dpp else f"{test['duration_minutes']} min"
-            st.markdown(f"**{test['title']}** · *{type_label}* — {len(test['questions'])} questions, {duration_label} — *{status_label}*")
+            st.markdown(f"**{test['title']}** — {len(test['questions'])} questions, {test['duration_minutes']} min — *{status_label}*")
 
             col_a, col_b, col_c = st.columns(3)
             with col_a:
@@ -258,28 +210,23 @@ def _render_existing_tests(db):
                         st.rerun()
             with col_b:
                 if test["status"] == "open":
-                    if not is_dpp:
-                        remaining = full_test_time_left(db, test_id)
-                        if remaining is not None:
-                            mins = int(remaining // 60)
-                            st.caption(f"{mins} min remaining on shared clock")
-                    close_label = "End Live Session" if not is_dpp else "Close"
-                    close_help = (
-                        "Ends the shared timed session for everyone still mid-test. "
-                        "Students can still revisit and retake this test afterward — nothing is ever deleted."
-                        if not is_dpp else
-                        "Students can still revisit and retake this DPP afterward — nothing is ever deleted."
-                    )
-                    if st.button(close_label, key=f"close_{test_id}", help=close_help):
+                    remaining = None
+                    from quiz import full_test_time_left
+                    remaining = full_test_time_left(db, test_id)
+                    if remaining is not None:
+                        mins = int(remaining // 60)
+                        st.caption(f"{mins} min remaining on shared clock")
+                    if st.button("Close Test Now", key=f"close_{test_id}"):
                         close_full_test(db, test_id)
                         st.rerun()
             with col_c:
-                submitted_count = len([s for s in test["submissions"].values() if s.get("best")])
-                attempt_total = sum(s.get("attempt_count", 0) for s in test["submissions"].values())
-                st.caption(f"{submitted_count} student(s) with a score · {attempt_total} attempt(s) total")
+                all_attempts = [a for attempts in test["submissions"].values() for a in attempts]
+                submitted_attempts = [a for a in all_attempts if a.get("submitted_at")]
+                distinct_students = len(test["submissions"])
+                st.caption(f"{len(submitted_attempts)} attempt(s) submitted / {distinct_students} student(s) started")
 
-            if test["submissions"]:
-                with st.expander("Results (best score per student)"):
+            if test["status"] == "closed":
+                with st.expander("Results"):
                     render_full_test_leaderboard(test)
 
 
@@ -467,9 +414,6 @@ def _render_leaderboard_tab(db):
     st.subheader("Leaderboard")
     if st.button("Reset Today's Session Scores"):
         db["current_session_scores"] = {u: 0 for u in db["users"] if db["users"][u]["role"] == "student"}
-        try:
-            save_db(db)
-            st.success("Session scores reset.")
-        except DatabaseUnavailableError:
-            st.error("Couldn't save just now — connection hiccup. Please try again in a few seconds.")
+        save_db(db)
+        st.success("Session scores reset.")
     render_leaderboard(db)
