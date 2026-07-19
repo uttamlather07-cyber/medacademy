@@ -20,7 +20,19 @@ def setup_page():
 # MISC
 # ----------------------------
 ONLINE_THRESHOLD_SECONDS = 15
-AUTOREFRESH_MS = 3000
+# Was 3000ms — a timer-driven rerun every 3s, uncoordinated with your own
+# click-driven reruns, was the main cause of "have to click 2-3 times" /
+# dropped clicks near a countdown ending (see app.py's LIVE SYNC comment
+# for the full explanation). 6s keeps live quiz/poll updates feeling
+# real-time while giving your own click's rerun much more room to
+# complete without a timer tick landing on top of it.
+AUTOREFRESH_MS = 6000
+# How often (per session) touch_user_last_seen() is actually allowed to
+# fire — a presence dot doesn't need sub-second freshness, so this cuts a
+# meaningful fraction of redundant Supabase calls without making "Online
+# Now" feel noticeably stale (ONLINE_THRESHOLD_SECONDS above is 15s
+# anyway, so touching every 8s is still well within that window).
+PRESENCE_TOUCH_INTERVAL_SECONDS = 8
 
 # ----------------------------
 # FULL-LENGTH TEST DEFAULTS
