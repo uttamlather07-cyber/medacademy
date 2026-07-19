@@ -1,200 +1,779 @@
 """
-database.py
-All persistence logic lives here.
+quiz.py
+AI-powered NEET question generation, scoring, live timed quizzes, and
+full-length timed tests (mock/PYQ-style exams).
 
-Backend: Supabase (Postgres), accessed via the supabase-py client. The
-entire app database is stored as ONE JSON blob in a single row (id=1) of
-the 'app_state' table's 'data' jsonb column — same shape as the old
-database.json file, just persisted remotely instead of on Streamlit
-Cloud's ephemeral local disk (which is why accounts kept disappearing).
+QUESTION SOURCES:
+Live quiz (single question or auto-quiz series) can pull questions from:
+  - "ai"   : generated live via the multi-provider AI pool (ai_providers.py)
+  - "bank" : drawn from an admin-pasted question bank
+             (st.session_state.question_bank, NOT saved to the database -
+             one-time-use, per-session set as requested)
+Full-length tests are always pre-generated in full BEFORE the test opens
+(see create_full_test) - nothing is generated live while students are
+sitting the test, so a slow/flaky AI call never blocks or times out a
+student mid-exam.
 
-Requires SUPABASE_URL and SUPABASE_KEY in .streamlit/secrets.toml (locally)
-or in Streamlit Cloud's Settings -> Secrets (when deployed). See README.md
-for the one-time Supabase project + table setup.
+ACCURACY SAFEGUARDS FOR AI-GENERATED QUESTIONS:
+1. POSITIONAL BIAS: options are shuffled in code after generation (with the
+   answer relocated to match), so a model's tendency to place the correct
+   answer in the same slot every time never reaches students.
+2. FACTUAL ACCURACY: a second, independent AI completion re-derives the
+   answer from scratch and checks/corrects the first pass before anything
+   is shown to students.
+Neither fix makes AI questions as trustworthy as a human-verified question
+bank. For high-stakes tests, prefer "My Question Bank" as the source.
 
-NOTE: uploaded files (library PDFs) are handled separately by storage.py,
-which persists them in Supabase Storage — also survives Streamlit Cloud
-restarts, same as this JSON data does.
+MULTI-PROVIDER RELIABILITY:
+Generation and verification both go through ai_providers.complete_with_rotation,
+which rotates across every configured Groq + Gemini key. A single
+exhausted/rate-limited/dead key never blocks generation - see
+ai_providers.py for the full rationale.
+
+CONCURRENCY / "WHO IS ALLOWED TO ADVANCE THE QUIZ" - THE CRITICAL FIX:
+The single biggest bug in the previous version: EVERY connected browser
+(every student's session, not just the admin's) independently executed the
+"reveal happened, now advance to the next question" code on its own
+autorefresh tick. With N students connected, that meant N browsers each
+sleeping, each calling generate_question (2-6 blocking AI calls), and each
+overwriting the database with their own "next question" - simultaneously.
+That's what crashed the app at question 2 with just 6 users: it was never
+really a "concurrency at scale" problem, it would happen with 2 users too.
+
+THE FIX: quiz-state-mutating functions in this file (advance_auto_quiz,
+lock_and_reveal, generate_question-triggering starts) must ONLY ever be
+called from the admin's own dashboard code path - student_dashboard.py
+must be strictly read-only with respect to quiz_state, only ever calling
+submit_answer() for its own user. This file doesn't enforce that by itself
+(it can't know who's calling it) - it's enforced by which functions
+admin_dashboard.py vs student_dashboard.py import and call. See both
+files' module docstrings.
 """
 
+import random
+import re
 import time
+import uuid
+
 import streamlit as st
-from supabase import create_client
 
-TABLE = "app_state"
-ROW_ID = 1
-
-DEFAULT_ADMIN_PASSWORD = "212020"  # change this after first login if possible
+from database import save_db
+from ai_providers import complete_with_rotation, AllProvidersExhaustedError
 
 
-@st.cache_resource
-def _get_client():
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
-    return create_client(url, key)
+# ----------------------------------------------------------------------
+# AI GENERATION - shuffle-bias fix + independent verification pass
+# ----------------------------------------------------------------------
+
+def _shuffle_options(q_data: dict) -> dict:
+    """Re-orders options randomly and relocates the answer to match, so the
+    model's own positional bias can never reach the student."""
+    options = list(q_data["options"])
+    correct_text = q_data["answer"]
+
+    if correct_text not in options:
+        return q_data  # caller's validation will catch this
+
+    shuffled = options[:]
+    random.shuffle(shuffled)
+
+    q_data = dict(q_data)
+    q_data["options"] = shuffled
+    q_data["answer"] = correct_text
+    return q_data
 
 
-def _default_db():
+_DANGLING_STEM_RE = re.compile(
+    r"(given\s+below\s+are|consider\s+the\s+following|read\s+the\s+following|"
+    r"read\s+the\s+assertion|assertion\s*\(a\)|two\s+statements|three\s+statements)"
+    r"[^.]{0,15}[:\-]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _has_dangling_statement_stem(question_text: str) -> bool:
+    return bool(_DANGLING_STEM_RE.search(question_text.strip()))
+
+
+def _validate_question_shape(q_data: dict) -> bool:
+    """Structural check: 4 options, answer text exactly matches one of
+    them, and statement/assertion stems actually contain their content."""
+    if not isinstance(q_data, dict):
+        return False
+    required = ("question", "options", "answer", "explanation")
+    if not all(k in q_data for k in required):
+        return False
+    if not isinstance(q_data["options"], list) or len(q_data["options"]) != 4:
+        return False
+    if q_data["answer"] not in q_data["options"]:
+        return False
+    question_text = str(q_data["question"]).strip()
+    if not question_text:
+        return False
+    if _has_dangling_statement_stem(question_text):
+        return False
+    return True
+
+
+DIFFICULTY_INSTRUCTIONS = {
+    "Easy": "EASY difficulty: direct recall of a single fact or definition, the kind "
+            "of question that rewards a student who read the NCERT textbook carefully. "
+            "No multi-step reasoning.",
+    "Medium": "MEDIUM difficulty: standard NEET difficulty - requires connecting two "
+              "related facts or applying a concept to a slightly unfamiliar example.",
+    "Hard": "HARD difficulty: a tough, discriminating NEET question - multi-step "
+            "reasoning, easily-confused options, or combining concepts from more than "
+            "one part of the chapter.",
+}
+
+
+def _generate_raw(subject: str, topic: str, difficulty: str = "Medium", pyq_style: bool = False) -> tuple:
+    """Returns (q_data, provider_used)."""
+    difficulty_instruction = DIFFICULTY_INSTRUCTIONS.get(difficulty, DIFFICULTY_INSTRUCTIONS["Medium"])
+    pyq_block = (
+        "\nWrite this in the STYLE of an actual NEET Previous Year Question - the exact "
+        "phrasing conventions and answer-choice patterns real NEET papers use. This is "
+        "AI-generated, INSPIRED BY that style, not a claim of being a real past paper "
+        "question - never state or imply a specific year or session.\n"
+        if pyq_style else ""
+    )
+
+    prompt = f"""Generate 1 tough NEET multiple choice question for {subject} on the chapter/topic "{topic}".
+Be scientifically precise. Double check the correct answer is actually correct before responding.
+
+DIFFICULTY: {difficulty_instruction}
+{pyq_block}
+You may use any standard NEET question style, including assertion-reason questions and
+two/three-statement "which of the following is/are correct" questions. This is exactly why the
+"question" field rule below matters.
+
+CRITICAL RULE FOR THE "question" FIELD:
+The "question" field must be a SINGLE, FULLY SELF-CONTAINED STRING that includes every piece of
+text a student needs in order to answer - there is no separate field for statements, assertions,
+or reasons, so nothing outside "question" and "options" is ever shown to the student.
+- If this is a statement-based question, the "question" string MUST include the complete text of
+  every statement, numbered (Statement I: ..., Statement II: ...).
+- If this is an assertion-reason question, the "question" string MUST include the full text of both
+  the Assertion (A) and the Reason (R) written out in full, not just the labels.
+- NEVER write a stem like "Given below are two statements:" without immediately writing out the
+  full statement text right after it, inside that same "question" string.
+- The "options" array should then contain only the final answer choices, never the statements.
+
+Output ONLY valid JSON in this exact shape, nothing else:
+{{"question": "text (fully self-contained)", "options": ["option 1", "option 2", "option 3", "option 4"], "answer": "exact correct option text, copied verbatim from options", "explanation": "Why it is correct, and briefly why the other options are wrong"}}"""
+
+    result, provider = complete_with_rotation(prompt)
+    return result, provider
+
+
+def _verify_question(q_data: dict) -> dict:
+    """Independent second pass: re-derives the answer from scratch and
+    compares it to the first pass's proposed answer."""
+    options_list = "\n".join(f"{i+1}. {opt}" for i, opt in enumerate(q_data["options"]))
+    prompt = f"""You are fact-checking a NEET exam question. Solve it yourself from scratch first,
+then compare to the proposed answer below.
+
+Question: {q_data['question']}
+Options:
+{options_list}
+
+Proposed answer: {q_data['answer']}
+Proposed explanation: {q_data['explanation']}
+
+Independently determine the correct option. If the proposed answer is correct, confirm it.
+If it is wrong, correct it.
+Output ONLY valid JSON in this exact shape, nothing else:
+{{"answer": "exact correct option text, copied verbatim from the options list above", "explanation": "correct, accurate explanation", "was_correct": true or false}}"""
+
+    verified, _provider = complete_with_rotation(prompt)
+
+    if verified.get("answer") not in q_data["options"]:
+        q_data = dict(q_data)
+        q_data["_verified"] = False
+        return q_data
+
+    q_data = dict(q_data)
+    q_data["answer"] = verified["answer"]
+    q_data["explanation"] = verified.get("explanation", q_data["explanation"])
+    q_data["_verified"] = True
+    q_data["_correction_made"] = not verified.get("was_correct", True)
+    return q_data
+
+
+def generate_question(subject: str, topic: str, max_attempts: int = 3,
+                       difficulty: str = "Medium", pyq_style: bool = False) -> dict:
+    """
+    Full pipeline: generate -> shuffle (bias fix) -> verify (accuracy pass).
+    Retries up to max_attempts times if the structural shape is ever
+    invalid. Raises AllProvidersExhaustedError (from ai_providers) if every
+    configured key fails - callers should catch this and show a specific
+    "check your API keys" message rather than a generic crash.
+    """
+    last_error = None
+
+    for attempt in range(max_attempts):
+        try:
+            q_data, _provider = _generate_raw(subject, topic, difficulty=difficulty, pyq_style=pyq_style)
+            q_data = _shuffle_options(q_data)
+
+            if not _validate_question_shape(q_data):
+                last_error = "Malformed question shape from generation step"
+                continue
+
+            q_data = _verify_question(q_data)
+
+            if not _validate_question_shape(q_data):
+                last_error = "Malformed question shape from verification step"
+                continue
+
+            return q_data
+        except AllProvidersExhaustedError:
+            raise
+        except (ValueError, KeyError, TypeError) as e:
+            last_error = str(e)
+            continue
+
+    raise RuntimeError(f"Could not generate a reliable question after {max_attempts} attempts. Last error: {last_error}")
+
+
+# ----------------------------------------------------------------------
+# QUESTION BANK - admin-pasted, plain-text parsing
+# ----------------------------------------------------------------------
+
+_OPTION_PREFIX_RE = re.compile(r"^\s*[\(\[]?([A-Da-d])[\)\].:\-]\s*")
+_ANSWER_LETTER_RE = re.compile(r"^\s*([A-Da-d])\b")
+
+
+def _strip_option_prefix(line: str) -> str:
+    return _OPTION_PREFIX_RE.sub("", line).strip()
+
+
+def parse_pasted_questions(raw_text: str) -> tuple:
+    """
+    Parses a plain-text block of NEET-style questions into
+    {question, options, answer, explanation} dicts.
+
+    Expected per-question format (blank line separates questions):
+        Q: What is the powerhouse of the cell?
+        A) Nucleus
+        B) Mitochondria
+        C) Ribosome
+        D) Golgi body
+        Answer: B
+        Explanation: Mitochondria generate ATP via oxidative phosphorylation.
+
+    Returns (parsed_questions, errors).
+    """
+    blocks = re.split(r"\n\s*\n", raw_text.strip())
+    parsed = []
+    errors = []
+
+    for block_num, block in enumerate(blocks, start=1):
+        lines = [l.strip() for l in block.strip().splitlines() if l.strip()]
+        if not lines:
+            continue
+
+        question_text = None
+        options = []
+        answer_letter = None
+        explanation = ""
+
+        for line in lines:
+            low = line.lower()
+            if low.startswith("q:") or low.startswith("q.") or low.startswith("question:"):
+                question_text = line.split(":", 1)[-1].strip()
+            elif low.startswith("answer:") or low.startswith("ans:"):
+                m = _ANSWER_LETTER_RE.match(line.split(":", 1)[-1].strip())
+                if m:
+                    answer_letter = m.group(1).upper()
+            elif low.startswith("explanation:") or low.startswith("solution:"):
+                explanation = line.split(":", 1)[-1].strip()
+            elif _OPTION_PREFIX_RE.match(line):
+                options.append(_strip_option_prefix(line))
+
+        if question_text is None:
+            errors.append(f"Block {block_num}: no line starting with 'Q:' found - skipped.")
+            continue
+        if len(options) != 4:
+            errors.append(f"Block {block_num} (\"{question_text[:40]}...\"): found {len(options)} options, need exactly 4 - skipped.")
+            continue
+        if answer_letter is None:
+            errors.append(f"Block {block_num} (\"{question_text[:40]}...\"): no valid 'Answer: A/B/C/D' line found - skipped.")
+            continue
+
+        letter_index = {"A": 0, "B": 1, "C": 2, "D": 3}[answer_letter]
+        answer_text = options[letter_index]
+
+        parsed.append({
+            "question": question_text,
+            "options": options,
+            "answer": answer_text,
+            "explanation": explanation or "No explanation provided.",
+        })
+
+    return parsed, errors
+
+
+# ----------------------------------------------------------------------
+# LIVE QUIZ - single question (admin reveals manually)
+# ----------------------------------------------------------------------
+
+def _empty_quiz_state() -> dict:
     return {
-        "quiz_state": {
-            "active": False,
-            "question_data": None,
-            "answers": {},
-            "answer_times": {},
-            "revealed": False,
-            "timer_seconds": 0,
-            "question_start_time": 0,
-            "auto_mode": False,
-            "subject": None,
-            "topic": None,
-            "difficulty": "Medium",
-            "pyq_style": False,
-            "total_questions": 0,
-            "current_index": 0,
-            "question_source": "ai",
-            "bank_order": [],
-        },
-        "full_tests": {},
-        "question_library": {},  # question_id -> {question, options, answer, explanation, subject, topic, difficulty, source, pyq_style, saved_at, saved_by}
-        "current_session_scores": {},
-        "users": {
-            "admin": {
-                "password": DEFAULT_ADMIN_PASSWORD,
-                "role": "admin",
-                "lifetime_score": 0,
-                "last_seen": time.time(),
-                "blocked": False,
-                "avatar_color": "#6366f1",
-            }
-        },
-        "scores": {},
+        "active": False,
+        "question_data": None,
+        "answers": {},
+        "answer_times": {},
+        "revealed": False,
+        "timer_seconds": 0,
+        "question_start_time": 0,
+        "auto_mode": False,
+        "subject": None,
+        "topic": None,
+        "total_questions": 0,
+        "current_index": 0,
+        "question_source": "ai",
+        "bank_order": [],
     }
 
 
-def upgrade_db(data: dict) -> dict:
-    """Ensure older saved states gain new fields without losing data."""
-    defaults = _default_db()
-
-    for key, value in defaults.items():
-        if key not in data:
-            data[key] = value
-
-    # nested quiz_state
-    for k, v in defaults["quiz_state"].items():
-        data["quiz_state"].setdefault(k, v)
-
-    # MIGRATION: full_tests submissions used to be ONE dict per student
-    # (single attempt ever). Now it's a LIST of attempt dicts, so students
-    # can retake a test multiple times with each attempt scored
-    # separately. Detect the old shape (a dict with a "started_at" key,
-    # rather than a list) and wrap it in a one-item list so existing
-    # historical attempts aren't lost when this upgrade runs.
-    for test in data.get("full_tests", {}).values():
-        test.setdefault("submissions", {})
-        for username, sub in list(test["submissions"].items()):
-            if isinstance(sub, dict):
-                test["submissions"][username] = [sub]
-
-    # per-user upgrades
-    for uname, uinfo in data.get("users", {}).items():
-        uinfo.setdefault("lifetime_score", data.get("scores", {}).get(uname, 0))
-        uinfo.setdefault("last_seen", time.time())
-        uinfo.setdefault("blocked", False)
-        uinfo.setdefault("avatar_color", "#6366f1")
-
-    return data
+def start_quiz(db, q_data: dict, timer_seconds: int = 0):
+    """ADMIN-ONLY - see module docstring."""
+    db["quiz_state"] = _empty_quiz_state()
+    db["quiz_state"].update({
+        "active": True,
+        "question_data": q_data,
+        "timer_seconds": timer_seconds,
+        "question_start_time": time.time() if timer_seconds else 0,
+    })
+    save_db(db)
 
 
-class DatabaseUnavailableError(Exception):
-    """Raised when Supabase can't be reached. Callers MUST NOT fall back to
-    treating this as 'no data' and saving a fresh empty database over it —
-    that was the #1 cause of accounts/scores/chat vanishing. A temporary
-    network hiccup should show an error and stop, never wipe real data."""
-    pass
+def clear_quiz(db):
+    """ADMIN-ONLY - see module docstring."""
+    db["quiz_state"] = _empty_quiz_state()
+    save_db(db)
 
 
-def load_db() -> dict:
-    """Cached for a short TTL (see _load_db_cached below) — this is the
-    single biggest lag/unresponsiveness fix in this file. Previously EVERY
-    rerun (every button click, AND every autorefresh tick, for every
-    connected user) did a full network round-trip to Supabase here before
-    anything could render. With st_autorefresh firing every few seconds
-    for every user, that meant near-constant fetching even for a single
-    person, and it gets worse (not just proportionally, but in bursts) as
-    concurrent users' independent autorefresh timers land at overlapping
-    moments. A short cache means a click-triggered rerun that happens to
-    land within ~2s of another rerun (yours or another student's) reuses
-    the same fetched snapshot instead of re-fetching from scratch."""
-    try:
-        return _load_db_cached()
-    except Exception as e:
-        raise DatabaseUnavailableError(str(e))
+# ----------------------------------------------------------------------
+# LIVE QUIZ - auto series (N questions, one at a time, shared countdown)
+# ----------------------------------------------------------------------
+
+def start_auto_quiz(db, subject: str, topic: str, total_questions: int, timer_seconds: int,
+                     difficulty: str = "Medium", pyq_style: bool = False):
+    """ADMIN-ONLY - see module docstring. Generates question 1 and starts
+    the series; subsequent questions are generated by advance_auto_quiz,
+    which must ALSO only ever be called from the admin's own session."""
+    q_data = generate_question(subject, topic, difficulty=difficulty, pyq_style=pyq_style)
+    db["quiz_state"] = _empty_quiz_state()
+    db["quiz_state"].update({
+        "active": True,
+        "question_data": q_data,
+        "timer_seconds": timer_seconds,
+        "question_start_time": time.time(),
+        "auto_mode": True,
+        "subject": subject,
+        "topic": topic,
+        "difficulty": difficulty,
+        "pyq_style": pyq_style,
+        "total_questions": total_questions,
+        "current_index": 1,
+        "question_source": "ai",
+    })
+    save_db(db)
 
 
-@st.cache_data(ttl=2, show_spinner=False)
-def _load_db_cached() -> dict:
-    client = _get_client()
-    result = client.table(TABLE).select("data").eq("id", ROW_ID).execute()
+def start_bank_quiz(db, bank_questions: list, timer_seconds: int, num_questions: int = None):
+    """ADMIN-ONLY - see module docstring. bank_questions is NOT persisted
+    to the database (one-time-use, per-session) - only the shuffled draw
+    order is tracked in quiz_state so the running quiz survives reruns."""
+    count = len(bank_questions) if num_questions is None else min(num_questions, len(bank_questions))
+    order = list(range(len(bank_questions)))
+    random.shuffle(order)
+    order = order[:count]
 
-    if result.data:
-        return upgrade_db(result.data[0]["data"])
-
-    # This case means the row genuinely doesn't exist yet in Supabase
-    # (true first-ever run, not a fetch failure) — safe to seed defaults.
-    fresh = upgrade_db(_default_db())
-    save_db(fresh)
-    return fresh
-
-
-def save_db(data: dict):
-    """Every write immediately invalidates the read cache above — without
-    this, a student who just answered a question or submitted a test
-    wouldn't see their own change reflected until the 2-second cache
-    window expired, which would look like the click 'didn't work' even
-    though it actually saved correctly. Correctness always wins over
-    avoiding one extra fetch here."""
-    client = _get_client()
-    client.table(TABLE).update({"data": data, "updated_at": "now()"}).eq("id", ROW_ID).execute()
-    _load_db_cached.clear()
+    first_q = bank_questions[order[0]]
+    db["quiz_state"] = _empty_quiz_state()
+    db["quiz_state"].update({
+        "active": True,
+        "question_data": first_q,
+        "timer_seconds": timer_seconds,
+        "question_start_time": time.time(),
+        "auto_mode": True,
+        "total_questions": count,
+        "current_index": 1,
+        "question_source": "bank",
+        "bank_order": order,
+    })
+    save_db(db)
 
 
-def register_user(username: str, user_data: dict) -> str:
-    """Atomically adds a new user via a Postgres function (register_user
-    SQL RPC — see README setup notes), instead of load_db() -> add to dict
-    -> save_db(). That old pattern is exactly what caused students to lose
-    freshly-created accounts and have to register repeatedly: if two
-    students register within the same few seconds (very common right when
-    a session starts), both load the same snapshot, both add themselves in
-    Python, and whichever save_db() finishes last overwrites the other's
-    new account entirely. Doing the add-if-not-exists check AND the write
-    in one atomic database step makes concurrent registrations safe
-    regardless of timing.
+def advance_auto_quiz(db):
+    """ADMIN-ONLY - see module docstring for why this is critical. Calling
+    this from more than one session concurrently is exactly what crashed
+    the app previously (every connected student's browser independently
+    generating + overwriting 'question 2' at once)."""
+    qs = db["quiz_state"]
+    if qs["current_index"] >= qs["total_questions"]:
+        clear_quiz(db)
+        return
 
-    Returns "ok", "taken" (username already exists), or "error".
-    """
-    client = _get_client()
-    try:
-        result = client.rpc(
-            "register_user", {"p_username": username, "p_user_data": user_data}
-        ).execute()
-        return result.data if isinstance(result.data, str) else "ok"
-    except Exception:
-        return "error"
+    if qs.get("question_source") == "bank":
+        bank = st.session_state.get("question_bank", [])
+        order = qs.get("bank_order", [])
+        next_pos = qs["current_index"]
+        if next_pos >= len(order) or not bank:
+            clear_quiz(db)
+            return
+        q_data = bank[order[next_pos]]
+    else:
+        q_data = generate_question(
+            qs["subject"], qs["topic"],
+            difficulty=qs.get("difficulty", "Medium"),
+            pyq_style=qs.get("pyq_style", False),
+        )
+
+    qs["question_data"] = q_data
+    qs["answers"] = {}
+    qs["answer_times"] = {}
+    qs["revealed"] = False
+    qs["question_start_time"] = time.time()
+    qs["current_index"] += 1
+    save_db(db)
 
 
-def touch_user_last_seen(username: str):
-    """Atomically updates one user's last_seen timestamp via a Postgres
-    function (touch_last_seen SQL RPC), instead of the old pattern of
-    loading the whole database, mutating one field in Python, and saving
-    the whole thing back. This runs on every single page load for every
-    logged-in user (app.py), so with several students autorefreshing every
-    few seconds, the old pattern was a constant source of overlapping
-    load-modify-save cycles — exactly the kind of race that can silently
-    drop other changes (chat messages, quiz answers, new registrations)
-    made in the same narrow window. Touching just one field atomically
-    removes that whole class of collision."""
-    client = _get_client()
-    try:
-        client.rpc("touch_last_seen", {"p_username": username}).execute()
-    except Exception:
-        pass  # Non-critical (presence indicator only) — never crash the page over this.
+def time_left(db) -> float:
+    """Seconds remaining on the current question's timer. None if untimed."""
+    qs = db["quiz_state"]
+    if not qs.get("timer_seconds"):
+        return None
+    elapsed = time.time() - qs.get("question_start_time", time.time())
+    remaining = qs["timer_seconds"] - elapsed
+    return max(0, remaining)
+
+
+def is_time_up(db) -> bool:
+    tl = time_left(db)
+    return tl is not None and tl <= 0
+
+
+def submit_answer(db, username: str, choice: str):
+    """Safe to call from ANY session - this is the one quiz.py function
+    every student's browser is expected to call, for themselves only."""
+    qs = db["quiz_state"]
+    qs["answers"][username] = choice
+    if qs.get("timer_seconds"):
+        elapsed = time.time() - qs.get("question_start_time", time.time())
+        qs["answer_times"][username] = round(max(0, elapsed), 1)
+    save_db(db)
+
+
+def lock_and_reveal(db):
+    """ADMIN-ONLY - see module docstring."""
+    q_data = db["quiz_state"]["question_data"]
+    for student, answer in db["quiz_state"]["answers"].items():
+        if student not in db["users"]:
+            continue
+        if answer == q_data["answer"]:
+            db["current_session_scores"][student] = db["current_session_scores"].get(student, 0) + 4
+            db["users"][student]["lifetime_score"] += 4
+        else:
+            db["current_session_scores"][student] = db["current_session_scores"].get(student, 0) - 1
+            db["users"][student]["lifetime_score"] -= 1
+    db["quiz_state"]["revealed"] = True
+    save_db(db)
+
+
+# ----------------------------------------------------------------------
+# FULL-LENGTH TIMED TESTS (mock exams / PYQ sets - professional exam UX)
+# ----------------------------------------------------------------------
+# Fundamentally different model from the live quiz above:
+#   - The ENTIRE question set is generated up front, before the test opens
+#     to students - nothing is generated live while a student is sitting
+#     the test, so a slow AI call can never block or time out a student
+#     mid-exam.
+#   - One shared clock (opened_at + duration_minutes), but NO per-question
+#     timer - a student can navigate freely between all N questions, mark
+#     for review, change answers, in any order, until the shared clock
+#     runs out or they submit.
+#   - Tests are PERMANENT once created - they live in db["full_tests"]
+#     forever (same as everything else in the JSON blob) so students can
+#     come back and retake them as practice at any time, not just during
+#     the original timed window. "Closing" a test only stops it counting
+#     toward the shared live clock / auto-submitting stragglers - it does
+#     NOT hide the test or block future retakes.
+#   - UNLIMITED RETAKES: test["submissions"][username] is a LIST of
+#     attempt dicts, not a single dict - every attempt is tracked and
+#     scored independently, so a student can redo the same test as many
+#     times as they want and see their improvement across attempts.
+#   - Scoring happens once per attempt, on submit (or when the clock
+#     expires for that specific attempt), not per-question - matches how
+#     a real proctored exam is graded.
+
+def create_full_test(db, title: str, questions: list, duration_minutes: int,
+                      marks_correct: float = 4, marks_wrong: float = -1) -> str:
+    """ADMIN-ONLY. Registers a new full-length test (questions already
+    generated/collected by the caller). Created in "draft" status so the
+    admin can review before students can see it - open_full_test activates
+    it. The test and every question in it are permanent once created -
+    there is no expiry or auto-delete, so it remains available as a
+    retakeable practice test indefinitely."""
+    test_id = uuid.uuid4().hex[:10]
+    db.setdefault("full_tests", {})
+    db["full_tests"][test_id] = {
+        "id": test_id,
+        "title": title,
+        "questions": questions,  # [{question, options, answer, explanation}, ...]
+        "duration_minutes": duration_minutes,
+        "marks_correct": marks_correct,
+        "marks_wrong": marks_wrong,
+        "status": "draft",  # draft -> open -> closed (closed still allows retakes - see module note above)
+        "opened_at": None,
+        "created_at": time.time(),
+        "submissions": {},  # username -> [ {answers, marked_for_review, started_at, submitted_at, score, ...}, ... ]  (list = one entry per attempt)
+    }
+    save_db(db)
+    return test_id
+
+
+def open_full_test(db, test_id: str):
+    """ADMIN-ONLY. Makes the test visible/attemptable to students and
+    starts its shared countdown clock for FIRST-time official attempts."""
+    test = db["full_tests"][test_id]
+    test["status"] = "open"
+    test["opened_at"] = time.time()
+    save_db(db)
+
+
+def close_full_test(db, test_id: str):
+    """ADMIN-ONLY. Ends the LIVE window for everyone - any student still
+    mid-attempt right now is auto-submitted with whatever they had filled
+    in so far. This does NOT delete the test or block future retakes -
+    students can still practice with it afterward (see start_full_test_attempt),
+    just without a live shared countdown; each retake gets its own
+    self-paced clock starting from when they click Start."""
+    test = db["full_tests"][test_id]
+    for attempts in test["submissions"].values():
+        for sub in attempts:
+            if sub.get("submitted_at") is None:
+                _grade_and_finalize_submission(test, sub)
+    test["status"] = "closed"
+    save_db(db)
+
+
+def full_test_time_left(db, test_id: str, started_at: float = None) -> float:
+    """Seconds remaining on a test clock. For the original live window
+    (started_at=None), this is relative to when the admin opened it and
+    returns None if the test isn't currently 'open'. For an individual
+    practice retake (started_at=<that attempt's own started_at>), pass the
+    attempt's own start time - retakes get their own self-paced clock
+    rather than being tied to (or blocked by) the original live window."""
+    test = db["full_tests"][test_id]
+    if started_at is not None:
+        elapsed = time.time() - started_at
+        return max(0, test["duration_minutes"] * 60 - elapsed)
+    if test["status"] != "open" or not test.get("opened_at"):
+        return None
+    elapsed = time.time() - test["opened_at"]
+    return max(0, test["duration_minutes"] * 60 - elapsed)
+
+
+def get_active_attempt(test: dict, username: str) -> dict:
+    """Returns the student's current in-progress attempt (submitted_at is
+    None), or None if they have no attempt running right now. Since a
+    student can have several PAST completed attempts but at most one
+    in-progress attempt at a time, this is the one to resume into."""
+    for sub in test["submissions"].get(username, []):
+        if sub.get("submitted_at") is None:
+            return sub
+    return None
+
+
+def get_past_attempts(test: dict, username: str) -> list:
+    """All of this student's COMPLETED attempts, most recent first."""
+    attempts = [s for s in test["submissions"].get(username, []) if s.get("submitted_at") is not None]
+    attempts.sort(key=lambda s: s["submitted_at"], reverse=True)
+    return attempts
+
+
+def start_full_test_attempt(db, test_id: str, username: str):
+    """Safe to call from a student's own session. Starts a NEW attempt -
+    if they already have one in progress, resumes it instead of starting
+    a duplicate (so a stray double-click or rerun never wipes progress).
+    Otherwise appends a fresh attempt to their history, enabling unlimited
+    retakes: a student who already completed this test can start again
+    and it's tracked as attempt #2, #3, etc., each scored independently."""
+    test = db["full_tests"][test_id]
+    test.setdefault("submissions", {})
+    existing = get_active_attempt(test, username)
+    if existing is not None:
+        return  # already have one running - don't wipe it or start a second
+    test["submissions"].setdefault(username, []).append({
+        "answers": {},            # question_index (str) -> chosen option text
+        "marked_for_review": [],  # list of question_index (int)
+        "started_at": time.time(),
+        "submitted_at": None,
+        "score": None,
+        "correct_count": None,
+        "wrong_count": None,
+        "unattempted_count": None,
+    })
+    save_db(db)
+
+
+def save_full_test_answer(db, test_id: str, username: str, question_index: int, choice: str):
+    """Safe to call from a student's own session - only ever touches that
+    student's OWN active attempt, never anyone else's, so concurrent
+    students answering simultaneously never collide."""
+    test = db["full_tests"][test_id]
+    sub = get_active_attempt(test, username)
+    if not sub:
+        return
+    sub["answers"][str(question_index)] = choice
+    save_db(db)
+
+
+def toggle_mark_for_review(db, test_id: str, username: str, question_index: int):
+    """Safe to call from a student's own session."""
+    test = db["full_tests"][test_id]
+    sub = get_active_attempt(test, username)
+    if not sub:
+        return
+    marked = sub.setdefault("marked_for_review", [])
+    if question_index in marked:
+        marked.remove(question_index)
+    else:
+        marked.append(question_index)
+    save_db(db)
+
+
+def _grade_and_finalize_submission(test: dict, sub: dict):
+    """Pure in-memory grading - caller is responsible for save_db()."""
+    questions = test["questions"]
+    correct = wrong = unattempted = 0
+    for i, q in enumerate(questions):
+        chosen = sub["answers"].get(str(i))
+        if chosen is None:
+            unattempted += 1
+        elif chosen == q["answer"]:
+            correct += 1
+        else:
+            wrong += 1
+    score = correct * test["marks_correct"] + wrong * test["marks_wrong"]
+    sub["score"] = score
+    sub["correct_count"] = correct
+    sub["wrong_count"] = wrong
+    sub["unattempted_count"] = unattempted
+    sub["submitted_at"] = time.time()
+
+
+def submit_full_test(db, test_id: str, username: str):
+    """Safe to call from a student's own session - grades and finalizes
+    ONLY that student's own active attempt. Idempotent: calling twice
+    (e.g. a double-click) doesn't re-grade or overwrite an already-
+    submitted attempt, since by then get_active_attempt() finds nothing
+    in progress."""
+    test = db["full_tests"][test_id]
+    sub = get_active_attempt(test, username)
+    if not sub:
+        return
+    _grade_and_finalize_submission(test, sub)
+    save_db(db)
+
+
+def get_full_test_leaderboard(test: dict) -> list:
+    """Ranked list of (username, best_score, correct, wrong, unattempted,
+    time_taken_seconds, attempt_count) - one row per student, using their
+    BEST completed attempt (highest score, tie-broken by fastest time) so
+    retaking a test to improve is reflected on the leaderboard without
+    cluttering it with every historical attempt."""
+    rows = []
+    for username, attempts in test["submissions"].items():
+        completed = [a for a in attempts if a.get("submitted_at") is not None]
+        if not completed:
+            continue
+        best = max(completed, key=lambda a: (a["score"], -(a["submitted_at"] - a["started_at"])))
+        time_taken = best["submitted_at"] - best["started_at"]
+        rows.append((username, best["score"], best["correct_count"], best["wrong_count"],
+                     best["unattempted_count"], time_taken, len(completed)))
+    rows.sort(key=lambda r: (-r[1], r[5]))  # highest score first, tie-break by faster time
+    return rows
+
+
+def render_full_test_leaderboard(test: dict, highlight_user: str = None):
+    """Same visual styling as render_leaderboard, for a specific full-length
+    test's results (best attempt per student) rather than the running
+    session scores."""
+    import html as html_lib
+
+    rows = get_full_test_leaderboard(test)
+    if not rows:
+        st.caption("No submissions yet.")
+        return
+
+    rows_html = []
+    for i, (username, score, correct, wrong, unattempted, time_taken, attempt_count) in enumerate(rows):
+        rank = i + 1
+        is_top3 = rank <= 3
+        is_me = highlight_user is not None and username == highlight_user
+        row_classes = "lb-row" + (" top3" if is_top3 else "") + (" me" if is_me else "")
+        rank_classes = "lb-rank" + (" top3" if is_top3 else "")
+        mins = int(time_taken // 60)
+        attempt_note = f" - best of {attempt_count}" if attempt_count > 1 else ""
+        display_name = html_lib.escape(username.capitalize()) + (" (You)" if is_me else "")
+
+        rows_html.append(
+            f"<div class='{row_classes}'>"
+            f"<div class='{rank_classes}'>#{rank}</div>"
+            f"<div class='lb-name'>{display_name}</div>"
+            f"<div class='lb-meta'>{correct} correct - {wrong} wrong - {unattempted} skipped - {mins} min{attempt_note}</div>"
+            f"<div class='lb-score'>{score} pts</div>"
+            f"</div>"
+        )
+
+    st.markdown("".join(rows_html), unsafe_allow_html=True)
+
+
+# ----------------------------------------------------------------------
+# LEADERBOARD (live-quiz session scores - see get_full_test_leaderboard
+# above for the separate full-test leaderboard)
+# ----------------------------------------------------------------------
+
+def render_leaderboard(db, highlight_user: str = None):
+    """Ranked leaderboard by current session score, with lifetime score
+    shown alongside for context. Top 3 get a distinct rank style; the
+    logged-in student's own row is highlighted."""
+    import html as html_lib
+
+    session_scores = db.get("current_session_scores", {})
+    all_students = [u for u, info in db["users"].items() if info["role"] == "student"]
+
+    if not all_students:
+        st.caption("No students yet.")
+        return
+
+    ranked = sorted(all_students, key=lambda u: session_scores.get(u, 0), reverse=True)
+
+    st.markdown("#### Today's Session")
+    rows_html = []
+    for i, student in enumerate(ranked):
+        rank = i + 1
+        is_top3 = rank <= 3
+        is_me = highlight_user is not None and student == highlight_user
+        row_classes = "lb-row" + (" top3" if is_top3 else "") + (" me" if is_me else "")
+        rank_classes = "lb-rank" + (" top3" if is_top3 else "")
+
+        session_pts = session_scores.get(student, 0)
+        lifetime_pts = db["users"][student].get("lifetime_score", 0)
+        display_name = html_lib.escape(student.capitalize()) + (" (You)" if is_me else "")
+
+        rows_html.append(
+            f"<div class='{row_classes}'>"
+            f"<div class='{rank_classes}'>#{rank}</div>"
+            f"<div class='lb-name'>{display_name}</div>"
+            f"<div class='lb-meta'>{lifetime_pts} lifetime</div>"
+            f"<div class='lb-score'>{session_pts} pts</div>"
+            f"</div>"
+        )
+
+    st.markdown("".join(rows_html), unsafe_allow_html=True)
