@@ -23,6 +23,9 @@ an oversight. Admin pastes questions in; students take timed tests.
    (Physics/Chemistry/etc.) to the test-taking screen. It's purely
    additive: every existing question automatically gets subject =
    'General' and nothing you already built breaks or needs redoing.
+   Also run `migration_002_persistent_login.sql` — this adds the
+   `auth_sessions` table that keeps students logged in across browser
+   restarts (see "Persistent login" section below).
 4. **This creates a BRAND NEW set of tables** (`app_users`, `tests`,
    `test_questions`, `test_attempts`, `test_answers`) — it does **not**
    touch or delete your old `app_state` table. Your old data stays
@@ -100,6 +103,25 @@ streamlit run app.py
   grey = unanswered — matches your reference screenshot.
 - **Answers/correct-answers only revealed after submit** — the review
   screen, never live during the test.
+
+## Persistent login (students don't have to log in every time)
+
+A student who checks "Stay logged in on this browser" won't need to
+log in again the next time they open the site, even after fully
+closing their browser — a random session token gets stored in the
+page's URL (not their password) and checked against the `auth_sessions`
+table on every visit.
+
+**Worth knowing:** unlike a normal invisible cookie, this token is
+visible in the browser's address bar and would show up in browser
+history or if that URL got bookmarked/shared. This was a deliberate
+choice, not an oversight — the more "invisible" cookie-based approach
+was tried first and found to be unreliable specifically on Streamlit
+Cloud's sandboxed deployment model (several independent developers have
+hit and documented this exact failure). If a student uses a shared or
+public computer, using the in-app **Log Out** button (not just closing
+the tab) properly revokes that session in the database, not just on
+that one device.
 
 ## Things I deliberately did NOT fix, flagged rather than silently left
 

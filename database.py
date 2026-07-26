@@ -435,3 +435,47 @@ def get_test_leaderboard(test_id: int, limit: int = 10) -> list[dict]:
         ranked = sorted(best_per_student.values(), key=lambda r: r["score"], reverse=True)
         return ranked[:limit]
     return _run(_do)
+
+
+def get_lifetime_leaderboard(limit: int = 20) -> list[dict]:
+    """Lifetime standings across EVERY test combined — sums each
+    student's BEST score per test (mirroring get_test_leaderboard's own
+    'best attempt only' rule), so a student who reattempted a test
+    several times for practice can't inflate their lifetime total just
+    by retaking the same test repeatedly; each test contributes at most
+    once, at its best result.
+
+    Deliberately NOT surfaced anywhere in student_dashboard.py — per-
+    test leaderboards stay automatic and visible to everyone, but
+    lifetime standings are something the admin posts themselves, on
+    their own schedule, not something the system reveals on its own.
+    This function only computes the numbers; showing them to anyone is
+    entirely up to what admin_dashboard.py does with the result."""
+    client = _get_client()
+
+    def _do():
+        result = (
+            client.table("test_attempts").select("username, test_id, score")
+            .in_("status", ["submitted", "expired"])
+            .execute()
+        )
+        # best score per (student, test) pair first...
+        best_per_student_per_test = {}
+        for row in result.data:
+            key = (row["username"], row["test_id"])
+            if key not in best_per_student_per_test or row["score"] > best_per_student_per_test[key]:
+                best_per_student_per_test[key] = row["score"]
+
+        # ...then summed per student across every test they've taken.
+        totals = {}
+        test_counts = {}
+        for (username, _test_id), score in best_per_student_per_test.items():
+            totals[username] = totals.get(username, 0) + score
+            test_counts[username] = test_counts.get(username, 0) + 1
+
+        ranked = sorted(
+            ({"username": u, "total_score": totals[u], "tests_taken": test_counts[u]} for u in totals),
+            key=lambda r: r["total_score"], reverse=True,
+        )
+        return ranked[:limit]
+    return _run(_do)

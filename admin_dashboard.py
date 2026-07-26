@@ -14,7 +14,7 @@ import streamlit as st
 from database import (
     create_test, add_questions, get_test, get_all_tests, open_test,
     close_test, delete_test, get_test_questions, get_test_leaderboard,
-    DatabaseUnavailableError,
+    get_lifetime_leaderboard, DatabaseUnavailableError,
 )
 from question_parser import parse_pasted_questions
 from sidebar import render_nav, render_roster
@@ -215,7 +215,8 @@ def _render_existing_tests():
 # ============================================================
 
 def _render_leaderboard_tab():
-    st.subheader("Leaderboard")
+    st.subheader("Per-Test Leaderboard")
+    st.caption("Visible to every student automatically once a test is closed — this is just for your own reference here.")
     try:
         tests = get_all_tests()
     except DatabaseUnavailableError:
@@ -228,6 +229,48 @@ def _render_leaderboard_tab():
     test_id = st.selectbox("Select a test", list(titles.keys()), format_func=lambda i: titles[i])
     if test_id:
         _render_leaderboard_for(test_id)
+
+    st.divider()
+    _render_lifetime_leaderboard_section()
+
+
+def _render_lifetime_leaderboard_section():
+    """Lifetime standings (sum of each student's best score per test,
+    across every test) — computed live, but ONLY when the admin
+    explicitly asks for it via this button. Students never see this
+    anywhere; per your call, per-test results stay automatic and public,
+    but lifetime standings are something you post yourself, whenever
+    you decide to, not something the system reveals on its own."""
+    st.subheader("Lifetime Leaderboard")
+    st.caption("Not shown to students anywhere — only computed and visible here, when you choose to look.")
+
+    if st.button("Show Lifetime Standings"):
+        st.session_state.show_lifetime_lb = True
+
+    if not st.session_state.get("show_lifetime_lb"):
+        return
+
+    try:
+        board = get_lifetime_leaderboard(limit=20)
+    except DatabaseUnavailableError:
+        st.error("Lost connection to the database.")
+        return
+    if not board:
+        st.caption("No scored attempts anywhere yet.")
+        return
+
+    lines = []
+    for i, row in enumerate(board, start=1):
+        medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"{i}.")
+        st.markdown(
+            f"{medal} **{html.escape(row['username'])}** — {row['total_score']:g} total pts "
+            f"across {row['tests_taken']} test(s)"
+        )
+        lines.append(f"{medal} {row['username']} — {row['total_score']:g} pts ({row['tests_taken']} tests)")
+
+    st.divider()
+    st.caption("Copy this to post it wherever you want (WhatsApp, group chat, etc.):")
+    st.code("🏆 Lifetime Leaderboard\n\n" + "\n".join(lines), language=None)
 
 
 def _render_leaderboard_for(test_id: int):

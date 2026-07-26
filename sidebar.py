@@ -9,6 +9,7 @@ import streamlit as st
 from database import get_all_users, DatabaseUnavailableError
 from styles import pulse_dot_html
 from config import ONLINE_THRESHOLD_SECONDS
+from auth import log_out
 
 
 def render_nav(admin: bool) -> str:
@@ -18,8 +19,14 @@ def render_nav(admin: bool) -> str:
         page = st.radio("Navigate", pages, label_visibility="collapsed")
         st.divider()
         if st.button("Log Out", use_container_width=True):
-            for key in ("logged_in", "username", "role", "active_attempt_id"):
-                st.session_state.pop(key, None)
+            # Routes through auth.py's log_out() — NOT a plain
+            # session_state.pop here — because that also has to delete
+            # the auth_sessions row and clear the browser cookie itself.
+            # Without that, a student tapping Log Out would just get
+            # silently logged back in on their very next page load,
+            # since the persistent-login cookie would still be sitting
+            # there valid.
+            log_out()
             st.rerun()
     return page
 

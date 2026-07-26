@@ -22,7 +22,7 @@ import streamlit as st
 from config import setup_page, PRESENCE_TOUCH_INTERVAL_SECONDS
 from styles import inject_css
 from database import touch_last_seen, DatabaseUnavailableError
-from auth import render_login_signup
+from auth import render_login_signup, try_resume_session
 from admin_dashboard import render_admin_dashboard
 from student_dashboard import render_student_dashboard
 
@@ -35,6 +35,16 @@ if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.username = ""
     st.session_state.role = ""
+
+# ---------------- RESUME PERSISTENT LOGIN (before the gate) ----------------
+# Checks for a valid session cookie and, if found, populates
+# st.session_state as if the student had just logged in — see
+# auth.py's module docstring for the full reasoning (a database-backed
+# token, never the actual password, in the cookie). Must run BEFORE the
+# login gate below, or a returning student with a perfectly valid
+# session would still see the login screen every time.
+if not st.session_state.logged_in:
+    try_resume_session()
 
 # ---------------- LOGIN GATE ----------------
 if not st.session_state.logged_in:
