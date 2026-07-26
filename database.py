@@ -63,13 +63,44 @@ def register_user(username: str, password: str, role: str) -> str:
     on app_users.username is the actual guarantee, this RPC just makes
     the check-and-insert one atomic round trip instead of two separate
     ones a Python-level 'does it exist? then insert' could race on.
-    Returns 'ok', 'taken', or 'error'."""
+    Returns 'ok', 'taken', or 'error'.
+
+    NOT used by the signup form anymore — see redeem_signup_code below,
+    which is what auth.py actually calls now that signup requires a
+    Telegram-group-membership-verified code. Left here (rather than
+    deleted) since it's still a valid, correct way to create an
+    account directly if you ever need to from the SQL Editor or a
+    future admin tool, just no longer the public self-serve path."""
     client = _get_client()
 
     def _do():
         result = client.rpc(
             "register_app_user",
             {"p_username": username, "p_password": password, "p_role": role},
+        ).execute()
+        return result.data
+    return _run(_do)
+
+
+def redeem_signup_code(code: str, username: str, password: str) -> str:
+    """THE actual signup path now — see migration_003_signup_codes.sql
+    for the full reasoning. A code only exists in signup_codes because
+    the Telegram BOT verified real group membership before issuing it
+    (see the bot's cmd_getsitecode), so successfully redeeming one here
+    is what proves this signup is a real group member, not just anyone
+    who found the site's URL.
+
+    Returns 'ok', 'invalid_code', 'expired', 'already_used', or
+    'username_taken' — auth.py maps each to a specific, honest message
+    rather than a generic 'signup failed', so a genuine mistake (typo
+    in the code, code already used) reads differently from an
+    unrelated one (username taken)."""
+    client = _get_client()
+
+    def _do():
+        result = client.rpc(
+            "redeem_signup_code",
+            {"p_code": code, "p_username": username, "p_password": password},
         ).execute()
         return result.data
     return _run(_do)
