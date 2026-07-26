@@ -1,339 +1,412 @@
 """
 student_dashboard.py
-The student console: live quiz (read-only + answer submission), full-length
-timed test taking, and the leaderboard.
+Everything a logged-in student sees: the list of open tests to join, and
+the test-taking screen itself.
 
-CRITICAL - READ BEFORE ADDING ANY QUIZ-STATE CODE HERE:
-This file must be STRICTLY READ-ONLY with respect to shared quiz_state.
-The only quiz.py functions this file may call are:
-    - submit_answer(db, username, choice)       - writes ONLY the caller's
-      own answer, never touches anyone else's state
-    - start_full_test_attempt / save_full_test_answer / toggle_mark_for_review
-      / submit_full_test - all scoped to the caller's OWN submission record
-      inside test["submissions"][username], never anyone else's
+CONCURRENCY MODEL — read before touching this file:
+Every write here (submit_answer, start_or_resume_attempt, finalize_attempt)
+routes through database.py's targeted per-row functions, NEVER a full
+load/save of "the database." A student answering a question touches
+exactly one row (their own test_answers row for that question) — this is
+what lets 20-30 students act simultaneously without contending with each
+other. If you're tempted to add a "load everything, mutate in Python,
+save everything back" pattern here, don't; that's the exact design that
+caused the original lag (see database.py's module docstring).
 
-This file must NEVER call advance_auto_quiz, lock_and_reveal, start_quiz,
-start_auto_quiz, start_bank_quiz, clear_quiz, create_full_test,
-open_full_test, or close_full_test. Every one of those is admin_dashboard.py's
-job, and ONLY admin_dashboard.py's job.
-
-WHY THIS MATTERS: the previous version of this app had student_dashboard.py
-independently calling advance_auto_quiz() on every connected student's own
-autorefresh tick. With N students connected, that meant N browsers
-simultaneously generating "the next question" (2-6 blocking AI calls each)
-and overwriting each other's writes to the database - that's what crashed
-the app at question 2 with just 6 users. See quiz.py's module docstring
-for the complete explanation. Keeping this file read-only for shared state
-is not a style preference, it's the actual fix for that bug.
+TIMER MODEL — the countdown display is a client-side JS clock (zero
+server cost to just LOOK at), but actual expiry enforcement is a
+server-side check inside a narrowly-scoped st.fragment(run_every=...)
+that contains NO interactive widgets — see _timer_watchdog_fragment's
+docstring for exactly why it's built this way and what breaks if you
+add a button inside it.
 """
 
+import html
 import time
-import html as html_lib
 import streamlit as st
+import streamlit.components.v1 as components
 
-from quiz import (
-    submit_answer, time_left, is_time_up, render_leaderboard,
-    start_full_test_attempt, save_full_test_answer, toggle_mark_for_review,
-    submit_full_test, full_test_time_left, render_full_test_leaderboard,
+from database import (
+    get_open_tests, get_test, get_test_questions,
+    start_or_resume_attempt, get_attempt, set_current_question,
+    submit_answer, get_attempt_answers, finalize_attempt,
+    get_test_leaderboard, DatabaseUnavailableError,
 )
 from sidebar import render_nav, render_roster
 
+LETTERS = ["A", "B", "C", "D", "E", "F"]
 
-def render_student_dashboard(db):
-    username = st.session_state.username
-    st.markdown("<h1>Dashboard</h1>", unsafe_allow_html=True)
+
+def render_student_dashboard(db_unused=None):
+    """db_unused kept only so app.py's existing call signature
+    (render_student_dashboard(db)) doesn't need touching elsewhere in
+    this same commit — this file no longer uses a blob 'db' parameter
+    at all, every screen below fetches exactly the rows it needs
+    directly from database.py."""
+    st.markdown("<h1>Student Dashboard</h1>", unsafe_allow_html=True)
+
+    # A student mid-attempt should land straight back on the test
+    # screen even after a page reload — check this BEFORE rendering any
+    # nav, so a refresh mid-test can't accidentally strand them on a
+    # test list they have to re-navigate from.
+    active = st.session_state.get("active_attempt_id")
+    if active:
+        attempt = get_attempt(active)
+        if attempt and attempt["status"] == "in_progress":
+            _render_test_taking_screen(attempt)
+            return
+        else:
+            st.session_state.pop("active_attempt_id", None)
+
     page = render_nav(admin=False)
-    render_roster(db)
+    render_roster()
 
     if page == "Tests":
-        _render_tests_page(db, username)
-    elif page == "Practice":
-        _render_live_quiz_view(db, username)
+        _render_test_list()
     elif page == "Leaderboard":
-        _render_leaderboard_page(db, username)
+        _render_leaderboard_picker()
 
 
-# ========================================================================
-# FULL-LENGTH TIMED TESTS - the professional exam-taking experience
-# ========================================================================
+# ============================================================
+# TEST LIST
+# ============================================================
 
-def _render_tests_page(db, username):
-    from quiz import get_active_attempt, get_past_attempts
-
-    tests = db.get("full_tests", {})
-    open_tests = {tid: t for tid, t in tests.items() if t["status"] == "open"}
-    closed_tests = {tid: t for tid, t in tests.items() if t["status"] == "closed"}
-
-    # If the student has ANY in-progress attempt right now (live test or a
-    # self-paced retake of a closed one), jump straight into it - avoids
-    # accidentally losing their place in a long exam to a stray rerun.
-    for test_id, test in tests.items():
-        if get_active_attempt(test, username) is not None:
-            _render_test_taking_ui(db, test_id, test, username)
-            return
-
+def _render_test_list():
     st.subheader("Available Tests")
-    if not open_tests:
-        st.caption("No tests are open right now. Check back once your instructor opens one, or practice a past test below.")
-    for test_id, test in open_tests.items():
+    try:
+        tests = get_open_tests()
+    except DatabaseUnavailableError:
+        st.error("Lost connection to the database. Please try again in a moment.")
+        return
+
+    if not tests:
+        st.caption("No tests are open right now — check back later.")
+        return
+
+    for test in tests:
         with st.container(border=True):
-            remaining = full_test_time_left(db, test_id)
-            mins = int(remaining // 60) if remaining is not None else test["duration_minutes"]
-            st.markdown(f"**{test['title']}**")
-            st.caption(f"{len(test['questions'])} questions - {test['duration_minutes']} minutes - +{test['marks_correct']} / {test['marks_wrong']} marking")
-            if remaining is not None and remaining <= 0:
-                st.caption("This test's live window has ended — see it under Past Tests below to practice it anytime.")
-                continue
-            st.caption(f"~{mins} min left on the shared clock.")
-            if st.button("Start Test", key=f"start_{test_id}", type="primary"):
-                start_full_test_attempt(db, test_id, username)
-                st.rerun()
-
-    if closed_tests:
-        st.divider()
-        st.subheader("Past Tests")
-        st.caption("These are permanently available — retake any of them as many times as you like for extra practice.")
-        for test_id, test in closed_tests.items():
-            past_attempts = get_past_attempts(test, username)
-            with st.container(border=True):
-                st.markdown(f"**{test['title']}**")
-                if past_attempts:
-                    best = max(past_attempts, key=lambda a: a["score"])
-                    st.write(
-                        f"Best score: **{best['score']}** over {len(past_attempts)} attempt(s) - "
-                        f"Correct: {best['correct_count']} - Wrong: {best['wrong_count']} - Unattempted: {best['unattempted_count']}"
-                    )
-                    with st.expander(f"Review attempt history ({len(past_attempts)})"):
-                        for i, attempt in enumerate(past_attempts):
-                            attempt_num = len(past_attempts) - i
-                            st.markdown(f"**Attempt {attempt_num}** — score {attempt['score']}")
-                            _render_test_review(test, attempt)
-                            st.divider()
-                    with st.expander("Leaderboard for this test"):
-                        render_full_test_leaderboard(test, highlight_user=username)
-                else:
-                    st.caption("You haven't attempted this test yet.")
-                if st.button("Retake as Practice" if past_attempts else "Attempt This Test", key=f"retake_{test_id}"):
-                    start_full_test_attempt(db, test_id, username)
-                    st.rerun()
+            st.markdown(f"**{html.escape(test['title'])}**")
+            st.caption(
+                f"{test['duration_minutes']} minutes · "
+                f"+{test['marks_correct']:g} correct / {test['marks_wrong']:g} wrong"
+            )
+            if st.button("Begin Test", key=f"begin_{test['id']}", type="primary"):
+                _begin_or_resume(test["id"])
 
 
-def _render_test_review(test, sub):
-    for i, q in enumerate(test["questions"]):
-        chosen = sub["answers"].get(str(i))
-        correct = q["answer"]
-        st.markdown(f"**Q{i + 1}.** {q['question']}")
-        for opt in q["options"]:
-            if opt == correct and opt == chosen:
-                st.markdown(f"[correct - your answer] {opt}")
-            elif opt == correct:
-                st.markdown(f"[correct answer] {opt}")
-            elif opt == chosen:
-                st.markdown(f"[your answer - wrong] {opt}")
-            else:
-                st.markdown(f"{opt}")
-        st.caption(q.get("explanation", ""))
-        st.divider()
+def _begin_or_resume(test_id: int):
+    username = st.session_state.username
+    try:
+        attempt_id = start_or_resume_attempt(test_id, username)
+    except DatabaseUnavailableError:
+        st.error("Couldn't reach the database — please try again.")
+        return
+    st.session_state.active_attempt_id = attempt_id
+    st.rerun()
 
 
-def _render_test_taking_ui(db, test_id, test, username):
-    """The signature exam experience: sticky top bar with countdown + live
-    answered/marked/unattempted counts, a question palette to jump
-    anywhere, and free navigation with no per-question timer - matches how
-    a real full-length proctored exam actually works, unlike the live quiz
-    below which is deliberately lockstep/synchronous.
+# ============================================================
+# TEST-TAKING SCREEN
+# ============================================================
 
-    Works identically whether this is an official live-window attempt OR
-    a self-paced retake of a closed test - full_test_time_left is passed
-    THIS ATTEMPT's own started_at, so a retake always gets its own fresh
-    full-duration clock rather than being tied to (or blocked by) whatever
-    the original live window's clock was doing."""
-    from quiz import get_active_attempt
-
-    sub = get_active_attempt(test, username)
-    questions = test["questions"]
-    total = len(questions)
-
-    remaining = full_test_time_left(db, test_id, started_at=sub["started_at"])
-    if remaining is not None and remaining <= 0:
-        submit_full_test(db, test_id, username)
-        st.warning("Time's up - your test has been auto-submitted.")
-        time.sleep(1.5)
-        st.rerun()
+def _render_test_taking_screen(attempt: dict):
+    test = get_test(attempt["test_id"])
+    if not test:
+        st.error("This test no longer exists.")
+        st.session_state.pop("active_attempt_id", None)
         return
 
-    if f"qidx_{test_id}" not in st.session_state:
-        st.session_state[f"qidx_{test_id}"] = 0
-    current_idx = st.session_state[f"qidx_{test_id}"]
+    questions = get_test_questions(test["id"])
+    if not questions:
+        st.warning("This test has no questions yet.")
+        return
 
-    answered_count = len(sub["answers"])
-    marked_count = len(sub.get("marked_for_review", []))
-    unattempted_count = total - answered_count
+    # THE WATCHDOG — see its own docstring for the full explanation of
+    # why it's isolated like this. Placed first so an already-expired
+    # attempt gets caught and finalized before rendering anything else
+    # below it.
+    _timer_watchdog_fragment(attempt["id"], test)
 
-    mins, secs = int(remaining // 60), int(remaining % 60)
-    urgent = remaining <= 300  # last 5 minutes
-    clock_class = "exam-bar-clock urgent" if urgent else "exam-bar-clock"
+    # Re-fetch AFTER the watchdog — if it just auto-submitted (status
+    # flipped to 'expired'), this render should show the results screen
+    # instead of a now-stale question screen underneath it.
+    attempt = get_attempt(attempt["id"])
+    if attempt["status"] != "in_progress":
+        _render_results_screen(attempt, test, questions)
+        return
 
-    st.markdown(
-        f"""
-        <div class="exam-bar">
-            <div class="exam-bar-title">{html_lib.escape(test['title'])}</div>
-            <div class="{clock_class}">{mins:02d}:{secs:02d}</div>
-            <div class="exam-bar-stats">
-                <div class="exam-stat answered"><div class="n">{answered_count}</div><div class="l">Answered</div></div>
-                <div class="exam-stat marked"><div class="n">{marked_count}</div><div class="l">Marked</div></div>
-                <div class="exam-stat unattempted"><div class="n">{unattempted_count}</div><div class="l">Remaining</div></div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    answers = get_attempt_answers(attempt["id"])
+    current_qid = attempt.get("current_question_id") or questions[0]["id"]
+    current_q = next((q for q in questions if q["id"] == current_qid), questions[0])
 
-    col_main, col_palette = st.columns([3, 1])
+    _render_countdown_display(attempt, test)
+    st.divider()
 
+    col_main, col_palette = st.columns([2.2, 1])
     with col_main:
-        q = questions[current_idx]
-        st.caption(f"Question {current_idx + 1} of {total}")
-        st.markdown(f"### {html_lib.escape(q['question'])}")
-
-        existing_answer = sub["answers"].get(str(current_idx))
-        choice = st.radio(
-            "Choose an answer",
-            q["options"],
-            index=q["options"].index(existing_answer) if existing_answer in q["options"] else None,
-            key=f"choice_{test_id}_{current_idx}",
-            label_visibility="collapsed",
-        )
-        if choice is not None and choice != existing_answer:
-            save_full_test_answer(db, test_id, username, current_idx, choice)
-
-        st.write("")
-        col_prev, col_mark, col_clear, col_next = st.columns(4)
-        with col_prev:
-            if st.button("Previous", disabled=current_idx == 0, use_container_width=True):
-                st.session_state[f"qidx_{test_id}"] = max(0, current_idx - 1)
-                st.rerun()
-        with col_mark:
-            is_marked = current_idx in sub.get("marked_for_review", [])
-            if st.button("Unmark" if is_marked else "Mark for Review", use_container_width=True):
-                toggle_mark_for_review(db, test_id, username, current_idx)
-                st.rerun()
-        with col_clear:
-            if st.button("Clear Answer", use_container_width=True, disabled=existing_answer is None):
-                save_full_test_answer(db, test_id, username, current_idx, None)
-                st.rerun()
-        with col_next:
-            if st.button("Next", disabled=current_idx >= total - 1, use_container_width=True, type="primary"):
-                st.session_state[f"qidx_{test_id}"] = min(total - 1, current_idx + 1)
-                st.rerun()
-
-        st.divider()
-        if st.button("Submit Test", type="primary", use_container_width=True):
-            st.session_state[f"confirm_submit_{test_id}"] = True
-
-        if st.session_state.get(f"confirm_submit_{test_id}"):
-            st.warning(f"You've answered {answered_count} of {total} questions. Submit anyway?")
-            col_yes, col_no = st.columns(2)
-            with col_yes:
-                if st.button("Yes, Submit Now", type="primary", use_container_width=True):
-                    submit_full_test(db, test_id, username)
-                    st.session_state.pop(f"confirm_submit_{test_id}", None)
-                    st.rerun()
-            with col_no:
-                if st.button("Keep Working", use_container_width=True):
-                    st.session_state.pop(f"confirm_submit_{test_id}", None)
-                    st.rerun()
-
+        _render_question_panel(attempt, test, current_q, questions, answers)
     with col_palette:
-        st.caption("Question Palette")
-        st.markdown('<div class="qpalette-btn-wrap">', unsafe_allow_html=True)
-        cols_per_row = 5
-        for row_start in range(0, total, cols_per_row):
-            row_cols = st.columns(cols_per_row)
-            for offset, col in enumerate(row_cols):
-                idx = row_start + offset
-                if idx >= total:
-                    continue
-                is_answered = str(idx) in sub["answers"]
-                is_marked = idx in sub.get("marked_for_review", [])
-                is_current = idx == current_idx
-                if is_current:
-                    label = f"[{idx + 1}]"
-                elif is_marked:
-                    label = f"*{idx + 1}"
-                elif is_answered:
-                    label = f"+{idx + 1}"
-                else:
-                    label = str(idx + 1)
-                with col:
-                    if st.button(label, key=f"pal_{test_id}_{idx}", use_container_width=True):
-                        st.session_state[f"qidx_{test_id}"] = idx
-                        st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
+        _render_palette(attempt, questions, answers, current_q)
 
 
-# ========================================================================
-# LIVE QUIZ - read-only view + answer submission only
-# ========================================================================
-
-def _render_live_quiz_view(db, username):
-    st.subheader("Live Practice")
-
-    if not db["quiz_state"]["active"]:
-        st.caption("No live quiz running right now.")
-        return
-
-    qs = db["quiz_state"]
-    q_data = qs["question_data"]
-
-    badges_html = ""
-    if qs.get("auto_mode"):
-        badges_html += f"<div class='progress-badge'><div class='t-val'>{qs['current_index']}/{qs['total_questions']}</div><div class='t-lbl'>Question</div></div>"
-    if qs.get("timer_seconds") and not qs["revealed"]:
-        remaining = time_left(db)
-        urgent = remaining is not None and remaining <= 10
-        badge_class = "timer-badge urgent" if urgent else "timer-badge"
-        badges_html += f"<div class='{badge_class}'><div class='t-val'>{int(remaining)}s</div><div class='t-lbl'>Remaining</div></div>"
-
-    safe_question = html_lib.escape(str(q_data["question"]))
-    st.markdown(
-        f"<div class='quiz-header-row'><div class='quiz-heading'>{safe_question}</div>"
-        f"<div class='quiz-badges'>{badges_html}</div></div>",
-        unsafe_allow_html=True,
+def _render_countdown_display(attempt: dict, test: dict):
+    """Purely visual client-side ticking clock — zero server calls per
+    second, so this costs nothing under load no matter how many
+    students have it open simultaneously. Computes its own remaining
+    time locally from a fixed deadline timestamp sent once at render
+    time; does NOT and cannot enforce anything by itself (see this
+    file's module docstring) — _timer_watchdog_fragment is what
+    actually enforces expiry. If this clock and the watchdog ever
+    disagree by a second or two, the watchdog's server-computed time is
+    always the one that's actually authoritative."""
+    started = attempt["started_at"]
+    deadline_js = f"new Date('{started}').getTime() + {test['duration_minutes']} * 60000"
+    components.html(
+        f"""
+        <div id="exam-clock" style="font-family:'JetBrains Mono',monospace;font-size:1.6rem;
+             font-weight:700;color:#e7eaf0;padding:10px 0;">--:--:--</div>
+        <script>
+        const deadline = {deadline_js};
+        function tick() {{
+            const remaining = Math.max(0, deadline - Date.now());
+            const h = Math.floor(remaining / 3600000);
+            const m = Math.floor((remaining % 3600000) / 60000);
+            const s = Math.floor((remaining % 60000) / 1000);
+            const el = document.getElementById('exam-clock');
+            if (el) {{
+                el.textContent = String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+                el.style.color = remaining < 60000 ? '#f5a623' : '#e7eaf0';
+            }}
+        }}
+        tick();
+        setInterval(tick, 1000);
+        </script>
+        """,
+        height=50,
     )
 
-    if not qs["revealed"]:
-        already_answered = username in qs["answers"]
-        time_up = qs.get("timer_seconds") and is_time_up(db)
 
-        if already_answered:
-            st.success(f"Answer submitted: {qs['answers'][username]}")
-        elif time_up:
-            st.warning("Time's up - waiting for the instructor to reveal the answer.")
+def _timer_watchdog_fragment(attempt_id: int, test: dict):
+    """THE actual enforcement mechanism for 'submit automatically when
+    time's up' — see this file's module docstring for the full
+    reasoning. Rebuilt fresh (not decorated at module level) each call
+    so it can close over attempt_id/test without needing them threaded
+    through session state.
+
+    DELIBERATELY CONTAINS NO INTERACTIVE WIDGETS. A plain st.button
+    placed inside a run_every fragment is known to sometimes fail to
+    register clicks — every real button on this screen (answers,
+    Next/Prev, palette, Submit) lives OUTSIDE this fragment in the
+    normal page body, completely unaffected by this fragment's
+    independent 5s rerun cycle. Do not add a button in here.
+
+    5s interval: frequent enough that auto-submit feels prompt relative
+    to a 1-3hr test, infrequent enough that even 30 concurrent students
+    each polling this is a trivial number of read-only Supabase calls —
+    a READ (recomputing elapsed time), never a write, so there's no
+    contention risk here at all, unlike the old blob-write pattern."""
+    @st.fragment(run_every=5)
+    def _watchdog():
+        attempt = get_attempt(attempt_id)
+        if not attempt or attempt["status"] != "in_progress":
+            return  # already finalized by a manual submit — nothing to do
+        elapsed = time.time() - _parse_ts(attempt["started_at"])
+        remaining = test["duration_minutes"] * 60 - elapsed
+        if remaining <= 0:
+            finalize_attempt(attempt_id, expired=True)
+            st.rerun()  # whole-app rerun from inside a fragment — supported
+    _watchdog()
+
+
+def _parse_ts(ts) -> float:
+    """Supabase returns timestamptz as an ISO string; accepts either
+    that or an already-numeric value defensively, since exactly which
+    shape comes back can depend on the client version."""
+    if isinstance(ts, (int, float)):
+        return ts
+    import datetime
+    # Supabase ISO strings look like 2026-07-25T10:00:00+00:00 or with
+    # a trailing Z — normalize Z to +00:00 for fromisoformat.
+    return datetime.datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
+
+
+def _render_question_panel(attempt, test, current_q, questions, answers):
+    section_qs = questions  # single flat list — no subject grouping in v1 of this rebuild
+    q_number = next((i for i, q in enumerate(section_qs, start=1) if q["id"] == current_q["id"]), 1)
+
+    st.markdown(f"**Question {q_number} of {len(section_qs)}**")
+    st.markdown(html.escape(current_q["question"]))
+
+    entry = answers.get(current_q["id"])
+    current_selection = entry["selected_option"] if entry and not entry["is_skipped"] else None
+
+    options = current_q["options"]
+    selected = st.radio(
+        "options", options, index=options.index(current_selection) if current_selection in options else None,
+        key=f"radio_{attempt['id']}_{current_q['id']}", label_visibility="collapsed",
+    )
+
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        if st.button("Skip", key=f"skip_{current_q['id']}", use_container_width=True):
+            submit_answer(attempt["id"], current_q["id"], None, True)
+            _go_to_relative(attempt, section_qs, current_q, +1)
+    with col_b:
+        if st.button("◀ Previous", key=f"prev_{current_q['id']}", use_container_width=True, disabled=(q_number == 1)):
+            _go_to_relative(attempt, section_qs, current_q, -1)
+    with col_c:
+        label = "Save & Next ▶" if q_number < len(section_qs) else "Save"
+        if st.button(label, key=f"next_{current_q['id']}", type="primary", use_container_width=True):
+            if selected is not None:
+                submit_answer(attempt["id"], current_q["id"], selected, False)
+            if q_number < len(section_qs):
+                _go_to_relative(attempt, section_qs, current_q, +1)
+            else:
+                st.rerun()
+
+    st.divider()
+    if st.button("Submit Test", type="primary", use_container_width=True):
+        st.session_state[f"confirm_submit_{attempt['id']}"] = True
+
+    if st.session_state.get(f"confirm_submit_{attempt['id']}"):
+        answered = len([a for a in answers.values() if not a["is_skipped"] and a["selected_option"]])
+        st.warning(f"You've answered {answered} of {len(section_qs)} questions. Submit now?")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("Yes, submit final answer", type="primary", key=f"confirm_yes_{attempt['id']}"):
+                finalize_attempt(attempt["id"], expired=False)
+                st.session_state.pop(f"confirm_submit_{attempt['id']}", None)
+                st.rerun()
+        with c2:
+            if st.button("Go back", key=f"confirm_no_{attempt['id']}"):
+                st.session_state.pop(f"confirm_submit_{attempt['id']}", None)
+                st.rerun()
+
+
+def _go_to_relative(attempt, section_qs, current_q, direction):
+    idx = next((i for i, q in enumerate(section_qs) if q["id"] == current_q["id"]), 0)
+    new_idx = max(0, min(len(section_qs) - 1, idx + direction))
+    new_q = section_qs[new_idx]
+    set_current_question(attempt["id"], new_q["id"])
+    st.rerun()
+
+
+def _render_palette(attempt, questions, answers, current_q):
+    st.markdown("**Question Palette**")
+    st.caption("🟩 Answered · 🟧 Current · ⬜ Unanswered/Skipped")
+
+    # st.button has no native color parameter (only 'primary'/
+    # 'secondary'/'tertiary'), so true green/red/grey palette buttons —
+    # matching the reference image — need direct CSS. Every keyed
+    # widget gets a `.st-key-<key>` class automatically (confirmed
+    # Streamlit behavior), so each button below is individually
+    # targetable by its own unique key. Built fresh every render
+    # (rather than static styles.py CSS) since which questions are
+    # answered changes attempt-to-attempt and question-to-question.
+    css_rules = []
+    for q in questions:
+        key = f"pal_{attempt['id']}_{q['id']}"
+        entry = answers.get(q["id"])
+        is_current = q["id"] == current_q["id"]
+        is_answered = entry and not entry["is_skipped"] and entry["selected_option"]
+        if is_current:
+            bg, border, color = "#f5a623", "#f5a623", "#1a1206"
+        elif is_answered:
+            bg, border, color = "#22c55e", "#22c55e", "#0d1f16"
         else:
-            choice = st.radio("Your answer", q_data["options"], index=None, key=f"live_choice_{qs.get('current_index', 0)}")
-            if choice is not None:
-                if st.button("Submit Answer", type="primary"):
-                    submit_answer(db, username, choice)
-                    st.rerun()
-    else:
-        correct = qs["answers"].get(username) == q_data["answer"]
-        box_class = "reveal-box" if correct else "reveal-box wrong"
-        result_text = "Correct!" if correct else ("Incorrect" if username in qs["answers"] else "No answer submitted")
-        st.markdown(
-            f"<div class='{box_class}'><strong>{result_text}</strong><br/>"
-            f"Correct answer: {html_lib.escape(q_data['answer'])}<br/>"
-            f"<span style='color:var(--text-dim);font-size:0.9rem'>{html_lib.escape(q_data.get('explanation', ''))}</span></div>",
-            unsafe_allow_html=True,
+            bg, border, color = "transparent", "rgba(231,234,240,0.24)", "#9aa4b6"
+        css_rules.append(
+            f".st-key-{key} button {{ background-color: {bg} !important; "
+            f"border-color: {border} !important; color: {color} !important; }}"
         )
-        st.divider()
-        render_leaderboard(db, highlight_user=username)
+    st.markdown(f"<style>{''.join(css_rules)}</style>", unsafe_allow_html=True)
+
+    cols_per_row = 5
+    rows = [questions[i:i + cols_per_row] for i in range(0, len(questions), cols_per_row)]
+    for row in rows:
+        cols = st.columns(cols_per_row)
+        for i, q in enumerate(row):
+            with cols[i]:
+                q_pos = questions.index(q) + 1
+                if st.button(str(q_pos), key=f"pal_{attempt['id']}_{q['id']}", use_container_width=True):
+                    set_current_question(attempt["id"], q["id"])
+                    st.rerun()
 
 
-# ========================================================================
-# LEADERBOARD
-# ========================================================================
+# ============================================================
+# RESULTS SCREEN (shown after submit/expiry — never live)
+# ============================================================
 
-def _render_leaderboard_page(db, username):
-    st.subheader("Leaderboard")
-    render_leaderboard(db, highlight_user=username)
+def _render_results_screen(attempt, test, questions):
+    st.success("Test submitted." if attempt["status"] == "submitted" else "Time's up — auto-submitted.")
+    st.markdown(f"### {html.escape(test['title'])}")
+
+    max_score = len(questions) * test["marks_correct"]
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Score", f"{attempt['score']:g} / {max_score:g}")
+    c2.metric("Correct", attempt["correct_count"])
+    c3.metric("Wrong", attempt["wrong_count"])
+    c4.metric("Unanswered", attempt["unanswered_count"])
+
+    if st.button("Review Answers"):
+        st.session_state[f"reviewing_{attempt['id']}"] = True
+
+    if st.session_state.get(f"reviewing_{attempt['id']}"):
+        _render_review(attempt, questions)
+
+    if st.button("Back to Test List"):
+        st.session_state.pop("active_attempt_id", None)
+        st.session_state.pop(f"reviewing_{attempt['id']}", None)
+        st.rerun()
+
+
+def _render_review(attempt, questions):
+    answers = get_attempt_answers(attempt["id"])
+    for i, q in enumerate(questions, start=1):
+        entry = answers.get(q["id"])
+        selected = entry["selected_option"] if entry and not entry["is_skipped"] else None
+        is_correct = selected == q["correct_answer"]
+        with st.container(border=True):
+            if selected is None:
+                status, color = "Unanswered", "#9aa4b6"
+            elif is_correct:
+                status, color = "Correct", "#22c55e"
+            else:
+                status, color = "Incorrect", "#ef4444"
+            st.markdown(f"**Q{i}.** {html.escape(q['question'])}")
+            st.markdown(f"<span style='color:{color};font-weight:600;'>{status}</span>", unsafe_allow_html=True)
+            for opt in q["options"]:
+                marker = ""
+                if opt == q["correct_answer"]:
+                    marker = " ✓ (correct answer)"
+                elif opt == selected:
+                    marker = " ✗ (your answer)"
+                st.markdown(f"- {html.escape(opt)}{marker}")
+            if q.get("explanation"):
+                st.caption(f"Explanation: {html.escape(q['explanation'])}")
+
+
+# ============================================================
+# LEADERBOARD (student view — read-only)
+# ============================================================
+
+def _render_leaderboard_picker():
+    st.subheader("Leaderboards")
+    try:
+        tests = get_open_tests()
+    except DatabaseUnavailableError:
+        st.error("Lost connection to the database.")
+        return
+    if not tests:
+        st.caption("No tests available yet.")
+        return
+    titles = {t["id"]: t["title"] for t in tests}
+    test_id = st.selectbox("Select a test", list(titles.keys()), format_func=lambda i: titles[i])
+    if test_id:
+        board = get_test_leaderboard(test_id, limit=10)
+        if not board:
+            st.caption("No scored attempts yet.")
+            return
+        for i, row in enumerate(board, start=1):
+            medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"{i}.")
+            st.markdown(f"{medal} **{html.escape(row['username'])}** — {row['score']:g} pts")

@@ -1,26 +1,13 @@
 """
 styles.py
-Visual identity for the platform.
-
-DESIGN CONCEPT - "Study Console"
-A focused, professional test/practice platform in the register of PW /
-Unacademy dashboards: dark neutral base, one confident indigo accent for
-actions and active states, and a strict, MEANINGFUL color contract for
-status (green = correct, red = incorrect, amber = time running low -
-these three colors are never used for anything else, so they stay legible
-signals rather than decoration).
-
-Sans-serif throughout (Inter) since this is a data-dense utility product,
-not an editorial page. Numbers - timers, scores, question counts - always
-render in a monospace face (JetBrains Mono) so they read as DATA at a
-glance, distinct from surrounding prose. This is the one typographic
-signature carried through the whole app.
-
-Signature element: the exam-mode top bar used during full-length timed
-tests - a persistent, slim status bar showing the countdown and a live
-answered/marked/unattempted breakdown. It's the single place real design
-attention goes, because it's the moment that most needs to feel like a
-real, trustworthy testing platform.
+Visual identity — kept from the original design almost unchanged (it was
+already a good match for a focused test-platform aesthetic: dark neutral
+base, one indigo accent, monospace numbers for timers/scores). Stripped
+of classes that only ever applied to the removed live-quiz/auto-quiz
+screens (.quiz-header-row, .progress-badge, .timer-badge, .reveal-box) —
+everything test-related (.exam-bar, .lb-row, palette buttons, cards,
+buttons, inputs) is kept, since the rebuilt test-taking screen still
+needs exactly that.
 """
 
 import streamlit as st
@@ -66,7 +53,7 @@ h1, h2, h3 { font-family: var(--sans) !important; color: var(--text) !important;
 
 .mono-num { font-family: var(--mono); font-variant-numeric: tabular-nums; font-weight: 600; }
 
-/* ============ LIVE STATUS DOT ============ */
+/* ============ LIVE STATUS DOT (presence roster) ============ */
 .pulse-dot {
     display: inline-block; width: 7px; height: 7px; border-radius: 50%;
     background: var(--success); box-shadow: 0 0 0 rgba(34,197,94,0.5);
@@ -79,33 +66,6 @@ h1, h2, h3 { font-family: var(--sans) !important; color: var(--text) !important;
 }
 .offline-dot { display:inline-block; width:7px; height:7px; border-radius:50%; background: var(--text-faint); }
 
-/* ============ HERO / LANDING ============ */
-.hero-wrap { text-align: center; padding: 64px 20px 32px 20px; }
-.hero-eyebrow {
-    font-family: var(--mono); font-size: 0.74rem; letter-spacing: 0.14em;
-    color: var(--accent); text-transform: uppercase; margin-bottom: 16px;
-    display: inline-flex; align-items: center; gap: 8px;
-}
-.hero-title {
-    font-family: var(--sans); font-weight: 800; font-size: 3rem; line-height: 1.08;
-    color: var(--text); margin: 0 0 14px 0; letter-spacing: -0.02em;
-}
-.hero-title em { color: var(--accent); font-style: normal; }
-.hero-sub {
-    font-size: 1.05rem; color: var(--text-dim); max-width: 560px;
-    margin: 0 auto 8px auto; line-height: 1.6;
-}
-@keyframes fadeSlideIn { 0% { opacity: 0; transform: translateY(12px); } 100% { opacity: 1; transform: translateY(0); } }
-.anim-in { animation: fadeSlideIn 0.5s cubic-bezier(0.16,1,0.3,1) forwards; }
-.anim-in-delay-1 { animation: fadeSlideIn 0.5s cubic-bezier(0.16,1,0.3,1) 0.08s forwards; opacity:0; }
-.anim-in-delay-2 { animation: fadeSlideIn 0.5s cubic-bezier(0.16,1,0.3,1) 0.16s forwards; opacity:0; }
-
-.vitals-strip { display: flex; justify-content: center; gap: 0; flex-wrap: wrap; margin: 28px 0 8px 0; }
-.vital-stat { padding: 0 28px; text-align: center; border-right: 1px solid var(--border); }
-.vital-stat:last-child { border-right: none; }
-.vital-stat .num { font-family: var(--mono); font-size: 1.6rem; font-weight: 700; color: var(--accent); }
-.vital-stat .label { font-size: 0.7rem; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.07em; margin-top: 2px; }
-
 /* ============ CARDS ============ */
 div[data-testid="stVerticalBlockBorderWrapper"] {
     background: var(--bg-card) !important; border: 1px solid var(--border) !important;
@@ -113,7 +73,6 @@ div[data-testid="stVerticalBlockBorderWrapper"] {
 }
 div[data-testid="stVerticalBlockBorderWrapper"]:hover { border-color: var(--border-strong) !important; }
 
-/* Tabs (used sparingly now - sidebar nav is primary) */
 .stTabs [data-baseweb="tab-list"] { gap: 4px; border-bottom: 1px solid var(--border); }
 .stTabs [data-baseweb="tab"] {
     font-weight: 600; font-size: 0.9rem; color: var(--text-dim);
@@ -157,30 +116,12 @@ div[data-testid="stVerticalBlockBorderWrapper"]:hover { border-color: var(--bord
     font-family: var(--mono); margin: 2px;
 }
 
-/* ============ QUESTION CARD (live quiz) ============ */
-.quiz-header-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 4px; }
-.quiz-header-row .quiz-heading { flex: 1; min-width: 0; font-size: 1.05rem; line-height: 1.5; }
-.quiz-badges { flex-shrink: 0; display: flex; gap: 8px; }
-.progress-badge, .timer-badge {
-    flex-shrink: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
-    min-width: 62px; padding: 6px 12px; border-radius: 8px; background: var(--bg-raised);
-    border: 1px solid var(--border-strong); line-height: 1.1;
-}
-.progress-badge .t-val { font-family: var(--mono); font-size: 1.15rem; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
-.timer-badge .t-val { font-family: var(--mono); font-size: 1.15rem; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
-.progress-badge .t-lbl, .timer-badge .t-lbl { font-size: 0.6rem; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 1px; }
-.timer-badge.urgent { border-color: var(--warning); background: var(--warning-dim); }
-.timer-badge.urgent .t-val { color: var(--warning); }
-
-@keyframes popIn { 0% { opacity:0; transform: scale(0.96); } 100% { opacity:1; transform: scale(1); } }
-.reveal-box { animation: popIn 0.35s cubic-bezier(0.16,1,0.3,1) forwards; background: var(--success-dim); border: 1px solid rgba(34,197,94,0.3); padding: 18px; border-radius: 10px; margin-top: 12px; }
-.reveal-box.wrong { background: var(--danger-dim); border: 1px solid rgba(239,68,68,0.3); }
-
-/* ============ EXAM MODE - SIGNATURE ELEMENT ============ */
-/* Persistent top bar during a full-length timed test: countdown clock +
-   live answered/marked/unattempted counts. This is the one place real
-   design attention goes - it's the moment that most needs to read as a
-   serious, trustworthy exam platform, not a quiz toy. */
+/* ============ EXAM MODE — signature element ============ */
+/* The JS countdown injected by student_dashboard.py's
+   _render_countdown_display renders its own inline styles (it has to,
+   since components.html is a sandboxed iframe that doesn't inherit
+   this page's CSS) — this block styles everything AROUND it: the
+   question card, palette grid, and the exam-style top divider. */
 .exam-bar {
     position: sticky; top: 0; z-index: 999;
     display: flex; align-items: center; justify-content: space-between;
@@ -188,22 +129,12 @@ div[data-testid="stVerticalBlockBorderWrapper"]:hover { border-color: var(--bord
     border-radius: 12px; padding: 14px 20px; margin-bottom: 18px;
     box-shadow: 0 4px 24px rgba(0,0,0,0.35);
 }
-.exam-bar-title { font-weight: 700; font-size: 0.95rem; color: var(--text); }
-.exam-bar-clock {
-    font-family: var(--mono); font-size: 1.4rem; font-weight: 700; color: var(--text);
-    font-variant-numeric: tabular-nums; letter-spacing: 0.02em;
-}
-.exam-bar-clock.urgent { color: var(--warning); animation: clockPulse 1s infinite; }
-@keyframes clockPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
-.exam-bar-stats { display: flex; gap: 18px; }
-.exam-stat { text-align: center; }
-.exam-stat .n { font-family: var(--mono); font-size: 1.05rem; font-weight: 700; }
-.exam-stat .l { font-size: 0.62rem; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.05em; }
-.exam-stat.answered .n { color: var(--success); }
-.exam-stat.marked .n { color: var(--warning); }
-.exam-stat.unattempted .n { color: var(--text-faint); }
 
-/* Question palette grid (jump to any question) */
+/* Question palette grid buttons — base sizing/shape here; per-button
+   green/orange/grey COLOR is injected dynamically per attempt by
+   student_dashboard.py's _render_palette (via .st-key-<button-key>
+   selectors), since which questions are answered changes constantly
+   and can't be a static rule in this file. */
 .qpalette-btn-wrap .stButton>button {
     aspect-ratio: 1; padding: 0; font-family: var(--mono); font-weight: 700; font-size: 0.85rem;
 }
@@ -232,9 +163,6 @@ section[data-testid="stSidebar"] { background: var(--bg-raised); border-right: 1
 hr, [data-testid="stDivider"] { border-color: var(--border) !important; }
 
 @media (max-width: 640px) {
-    .hero-title { font-size: 2rem; }
-    .vitals-strip { gap: 6px; }
-    .vital-stat { padding: 0 14px; border-right: none; }
     .exam-bar { flex-direction: column; align-items: stretch; gap: 10px; }
 }
 </style>

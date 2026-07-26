@@ -1,13 +1,18 @@
 """
 config.py
 Central place for page configuration and constants.
-"""
 
+Stripped of everything AI/live-quiz related — AUTOREFRESH_MS,
+PRESENCE_TOUCH_INTERVAL_SECONDS's old app-wide autorefresh use, and the
+DIFFICULTY_LEVELS/AI generation defaults are all gone, since this build
+has no live quiz and no AI generation. The one remaining timing constant
+that matters (the test auto-submit watchdog's poll interval) lives in
+student_dashboard.py right next to the fragment it configures, not here,
+since it's tightly coupled to that one piece of logic.
+"""
 import streamlit as st
 
-# ----------------------------
-# PAGE CONFIG
-# ----------------------------
+
 def setup_page():
     st.set_page_config(
         page_title="NEET Test Console",
@@ -16,29 +21,16 @@ def setup_page():
         initial_sidebar_state="expanded",
     )
 
-# ----------------------------
-# MISC
-# ----------------------------
+
 ONLINE_THRESHOLD_SECONDS = 15
-# Was 3000ms — a timer-driven rerun every 3s, uncoordinated with your own
-# click-driven reruns, was the main cause of "have to click 2-3 times" /
-# dropped clicks near a countdown ending (see app.py's LIVE SYNC comment
-# for the full explanation). 6s keeps live quiz/poll updates feeling
-# real-time while giving your own click's rerun much more room to
-# complete without a timer tick landing on top of it.
-AUTOREFRESH_MS = 6000
-# How often (per session) touch_user_last_seen() is actually allowed to
-# fire — a presence dot doesn't need sub-second freshness, so this cuts a
-# meaningful fraction of redundant Supabase calls without making "Online
-# Now" feel noticeably stale (ONLINE_THRESHOLD_SECONDS above is 15s
-# anyway, so touching every 8s is still well within that window).
-PRESENCE_TOUCH_INTERVAL_SECONDS = 8
+# Presence pings are cheap, targeted single-row updates now (touch_last_seen
+# RPC) rather than a full-blob rewrite, so this can stay generous without
+# worrying about load the way the old system had to.
+PRESENCE_TOUCH_INTERVAL_SECONDS = 20
 
 # ----------------------------
-# FULL-LENGTH TEST DEFAULTS
+# TEST DEFAULTS
 # ----------------------------
 DEFAULT_TEST_DURATION_MINUTES = 180  # 3 hours
-DEFAULT_TEST_QUESTION_COUNT = 180
 DEFAULT_MARKS_CORRECT = 4
 DEFAULT_MARKS_WRONG = -1
-DIFFICULTY_LEVELS = ["Easy", "Medium", "Hard"]

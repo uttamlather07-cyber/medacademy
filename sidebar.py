@@ -1,68 +1,53 @@
 """
 sidebar.py
-Sidebar navigation + who's currently online, shown for logged-in users.
+Nav menu (admin sees Tests/Leaderboard, student sees Tests/Leaderboard)
+and the presence roster underneath it.
 """
 
 import time
 import streamlit as st
-
-from config import ONLINE_THRESHOLD_SECONDS
+from database import get_all_users, DatabaseUnavailableError
 from styles import pulse_dot_html
+from config import ONLINE_THRESHOLD_SECONDS
 
 
 def render_nav(admin: bool) -> str:
-    """Renders the nav section links and returns the selected page key.
-    Uses st.session_state["nav_page"] so the selection survives reruns
-    (autorefresh ticks) without resetting to the first tab every time."""
-    pages = (
-        ["Tests", "Live Quiz", "Leaderboard"] if admin
-        else ["Tests", "Practice", "Leaderboard"]
-    )
-    if "nav_page" not in st.session_state or st.session_state.nav_page not in pages:
-        st.session_state.nav_page = pages[0]
-
     with st.sidebar:
-        st.markdown("### Navigate")
-        for page in pages:
-            is_active = st.session_state.nav_page == page
-            if st.button(page, key=f"nav_{page}", type="primary" if is_active else "secondary", use_container_width=True):
-                st.session_state.nav_page = page
-                st.rerun()
+        st.markdown(f"**Logged in as** `{st.session_state.username}`")
+        pages = ["Tests", "Leaderboard"]
+        page = st.radio("Navigate", pages, label_visibility="collapsed")
         st.divider()
+        if st.button("Log Out", use_container_width=True):
+            for key in ("logged_in", "username", "role", "active_attempt_id"):
+                st.session_state.pop(key, None)
+            st.rerun()
+    return page
 
-    return st.session_state.nav_page
 
+def render_roster():
+    try:
+        users = get_all_users()
+    except DatabaseUnavailableError:
+        return  # roster is a nicety, not worth erroring the whole page over
 
-def render_roster(db):
+    now = time.time()
     with st.sidebar:
-        st.markdown("### Online Now")
-
-        current_time = time.time()
-        users_sorted = sorted(
-            db["users"].items(),
-            key=lambda kv: (current_time - kv[1].get("last_seen", 0) >= ONLINE_THRESHOLD_SECONDS, kv[0]),
-        )
-
-        for user, info in users_sorted:
-            is_online = current_time - info.get("last_seen", 0) < ONLINE_THRESHOLD_SECONDS
-            role_tag = "ADMIN" if info.get("role") == "admin" else "STUDENT"
-            name_class = "roster-name" if is_online else "roster-name offline"
-
+        st.divider()
+        st.caption("ONLINE NOW")
+        for u in sorted(users, key=lambda x: x["username"]):
+            last_seen = u.get("last_seen")
+            is_online = False
+            if last_seen:
+                try:
+                    import datetime
+                    ts = datetime.datetime.fromisoformat(str(last_seen).replace("Z", "+00:00")).timestamp()
+                    is_online = (now - ts) < ONLINE_THRESHOLD_SECONDS
+                except Exception:
+                    is_online = False
+            dot = pulse_dot_html(is_online)
+            offline_class = "" if is_online else "offline"
             st.markdown(
-                f"""
-                <div class="roster-row">
-                    {pulse_dot_html(is_online)}
-                    <span class="{name_class}">{user.capitalize()}</span>
-                    <span class="roster-role-tag">{role_tag}</span>
-                </div>
-                """,
+                f"<div class='roster-row'>{dot}<span class='roster-name {offline_class}'>{u['username']}</span>"
+                f"<span class='roster-role-tag'>{u['role']}</span></div>",
                 unsafe_allow_html=True,
             )
-
-        st.divider()
-        if st.button("Log Out", key="logout_btn", use_container_width=True):
-            st.session_state.logged_in = False
-            st.session_state.username = ""
-            st.session_state.role = ""
-            st.session_state.pop("nav_page", None)
-            st.rerun()
