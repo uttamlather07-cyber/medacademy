@@ -109,6 +109,44 @@ def touch_last_seen(username: str):
         pass  # non-critical — never crash the page over a presence ping
 
 
+def create_session(token: str, username: str, days_valid: int = 30) -> None:
+    """Persists a new persistent-login session — see auth_sessions
+    table comment in schema.sql for the full reasoning. Called once,
+    right after a successful login, from auth.py."""
+    client = _get_client()
+
+    def _do():
+        client.rpc("create_session", {"p_token": token, "p_username": username, "p_days_valid": days_valid}).execute()
+    return _run(_do)
+
+
+def validate_session(token: str) -> str | None:
+    """Returns the username if this token maps to a still-valid
+    (non-expired) session, None otherwise — None covers both 'no such
+    token' and 'token exists but expired', auth.py doesn't need to
+    distinguish those, either way the answer is 'not logged in.'"""
+    client = _get_client()
+
+    def _do():
+        result = client.rpc("validate_session", {"p_token": token}).execute()
+        return result.data
+    return _run(_do)
+
+
+def delete_session(token: str) -> None:
+    """Explicit logout — removes the session row so this specific
+    cookie can never authenticate again, even if the browser still has
+    it. Doesn't touch any OTHER session the same student might have on
+    a different device/browser (each login gets its own independent
+    token), which is deliberate — logging out on a phone shouldn't log
+    a student out of a laptop they're actively using."""
+    client = _get_client()
+
+    def _do():
+        client.table("auth_sessions").delete().eq("token", token).execute()
+    return _run(_do)
+
+
 def get_all_users() -> list[dict]:
     client = _get_client()
 
