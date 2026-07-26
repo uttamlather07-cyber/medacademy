@@ -104,6 +104,25 @@ streamlit run app.py
 - **Answers/correct-answers only revealed after submit** — the review
   screen, never live during the test.
 
+## Group-membership-gated signup (only your Telegram group can join)
+
+Run `migration_003_signup_codes.sql` in Supabase's SQL Editor. After
+this, nobody can create a website account just by finding the URL —
+signup requires a one-time code, which only the Telegram bot can issue,
+and only after it verifies (via Telegram's own API) that the requester
+is a real, current member of one of your approved groups.
+
+**Student flow:** DM the bot `/getsitecode` → bot checks their group
+membership → if verified, bot sends a code good for 15 minutes, one
+use only → student enters that code plus a username/password on the
+website's Sign Up tab.
+
+**On the bot side**, this needs `SUPABASE_URL`/`SUPABASE_KEY` set as
+environment variables (same values as the website's secrets — see
+`site_leaderboard.py`'s module docstring in the bot's codebase) and
+`supabase` installed in the bot's Python environment, same as the
+`/sitelb` leaderboard command already required.
+
 ## Persistent login (students don't have to log in every time)
 
 A student who checks "Stay logged in on this browser" won't need to
