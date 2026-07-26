@@ -12,7 +12,7 @@ import html
 import streamlit as st
 
 from database import (
-    create_test, add_questions, get_all_tests, open_test,
+    create_test, add_questions, get_test, get_all_tests, open_test,
     close_test, delete_test, get_test_questions, get_test_leaderboard,
     DatabaseUnavailableError,
 )
@@ -44,8 +44,13 @@ def _render_test_manager():
 # CREATE TEST
 # ============================================================
 
+# ============================================================
+# CREATE TEST — two-step flow: shell first, then subjects one at a time
+# ============================================================
+
 def _render_new_test_form():
     with st.container(border=True):
+        st.caption("Step 1 — set up the test shell. You'll add subjects and paste questions next.")
         title = st.text_input("Test title", placeholder="e.g. NEET Full Syllabus Mock #3")
 
         col_dur, col_correct, col_wrong = st.columns(3)
@@ -59,7 +64,53 @@ def _render_new_test_form():
         with col_wrong:
             marks_wrong = st.number_input("Marks per wrong (negative marking)", value=float(DEFAULT_MARKS_WRONG), step=0.5)
 
-        st.caption("Paste questions below (blank line between each).")
+        if st.button("Create Test Shell", type="primary", disabled=not title.strip(), use_container_width=True):
+            try:
+                test_id = create_test(
+                    title=title.strip(), duration_minutes=int(duration_minutes),
+                    marks_correct=marks_correct, marks_wrong=marks_wrong,
+                    created_by=st.session_state.username,
+                )
+            except DatabaseUnavailableError:
+                st.error("Lost connection to the database — please try again.")
+                return
+            st.session_state.building_test_id = test_id
+            st.rerun()
+
+    building_id = st.session_state.get("building_test_id")
+    if building_id:
+        st.divider()
+        _render_add_subject_flow(building_id)
+
+
+def _render_add_subject_flow(test_id: int):
+    """Step 2 — add one subject's worth of questions at a time, same
+    pattern as the Telegram bot's walkthrough (pick a subject name,
+    paste that subject's block, repeat). Reusable after the test is
+    already created too — an admin can come back to Manage Existing
+    Tests and add more subjects to a draft test later; this isn't a
+    one-shot flow locked to the moment of creation."""
+    test = get_test(test_id)
+    if not test:
+        st.session_state.pop("building_test_id", None)
+        return
+
+    st.markdown(f"**Step 2 — add subjects to \"{html.escape(test['title'])}\"**")
+    try:
+        existing_subjects = get_test_questions(test_id)
+    except DatabaseUnavailableError:
+        st.error("Lost connection to the database.")
+        return
+
+    if existing_subjects:
+        counts = {}
+        for q in existing_subjects:
+            counts[q["subject"]] = counts.get(q["subject"], 0) + 1
+        st.caption("Subjects added so far: " + ", ".join(f"{s} ({c})" for s, c in counts.items()))
+
+    with st.container(border=True):
+        subject_name = st.text_input("Subject name", placeholder="e.g. Physics", key=f"subj_name_{test_id}")
+        st.caption("Paste this subject's questions below (blank line between each).")
         st.code(
             "Q: What is the powerhouse of the cell?\n"
             "A) Nucleus\nB) Mitochondria\nC) Ribosome\nD) Golgi body\n"
@@ -67,43 +118,41 @@ def _render_new_test_form():
             "Explanation: Mitochondria generate ATP via oxidative phosphorylation.",
             language=None,
         )
-        raw_text = st.text_area("Paste your questions here", height=280, key="new_test_paste")
+        raw_text = st.text_area("Paste questions here", height=260, key=f"subj_paste_{test_id}")
 
-        if st.button("Parse & Preview"):
+        if st.button("Parse & Preview", key=f"parse_{test_id}"):
             parsed, errors = parse_pasted_questions(raw_text)
-            st.session_state.pending_questions = parsed
-            st.session_state.pending_errors = errors
+            st.session_state[f"pending_q_{test_id}"] = parsed
+            st.session_state[f"pending_e_{test_id}"] = errors
 
-        if "pending_questions" in st.session_state:
-            parsed = st.session_state.pending_questions
-            errors = st.session_state.get("pending_errors", [])
-            if parsed:
-                st.success(f"{len(parsed)} question(s) parsed successfully.")
-            if errors:
-                st.warning(f"{len(errors)} block(s) skipped:")
-                for e in errors:
-                    st.caption(f"• {e}")
+        parsed = st.session_state.get(f"pending_q_{test_id}", [])
+        errors = st.session_state.get(f"pending_e_{test_id}", [])
+        if parsed:
+            st.success(f"{len(parsed)} question(s) parsed successfully.")
+        if errors:
+            st.warning(f"{len(errors)} block(s) skipped:")
+            for e in errors:
+                st.caption(f"• {e}")
 
-            can_create = bool(title.strip()) and len(parsed) > 0
-            if st.button("Create Test", type="primary", disabled=not can_create, use_container_width=True):
-                _create_test_with_questions(title.strip(), int(duration_minutes), marks_correct, marks_wrong, parsed)
+        can_add = bool(subject_name.strip()) and len(parsed) > 0
+        if st.button("Add This Subject", type="primary", disabled=not can_add, use_container_width=True):
+            try:
+                add_questions(test_id, parsed, subject=subject_name.strip())
+            except DatabaseUnavailableError:
+                st.error("Lost connection — the subject may not have saved. Check below before retrying.")
+                return
+            st.success(f"Added {len(parsed)} question(s) under \"{subject_name.strip()}\".")
+            st.session_state.pop(f"pending_q_{test_id}", None)
+            st.session_state.pop(f"pending_e_{test_id}", None)
+            st.session_state.pop(f"subj_paste_{test_id}", None)
+            st.rerun()
 
-
-def _create_test_with_questions(title, duration_minutes, marks_correct, marks_wrong, questions):
-    try:
-        test_id = create_test(
-            title=title, duration_minutes=duration_minutes,
-            marks_correct=marks_correct, marks_wrong=marks_wrong,
-            created_by=st.session_state.username,
-        )
-        add_questions(test_id, questions)
-    except DatabaseUnavailableError:
-        st.error("Lost connection to the database — the test may not have saved. Please check Manage Existing Tests and try again if needed.")
-        return
-
-    st.success(f"Test \"{title}\" created with {len(questions)} question(s) — go to **Manage Existing Tests** to open it to students.")
-    st.session_state.pop("pending_questions", None)
-    st.session_state.pop("pending_errors", None)
+    col_done, col_another = st.columns(2)
+    with col_done:
+        if st.button("Done — finish this test", use_container_width=True):
+            st.session_state.pop("building_test_id", None)
+            st.success("Test saved as a draft. Go to **Manage Existing Tests** to open it to students, or come back here anytime to add more subjects.")
+            st.rerun()
 
 
 # ============================================================
@@ -133,6 +182,9 @@ def _render_existing_tests():
             col_a, col_b, col_c = st.columns(3)
             with col_a:
                 if test["status"] == "draft":
+                    if st.button("Add More Subjects", key=f"addsub_{test['id']}"):
+                        st.session_state.building_test_id = test["id"]
+                        st.rerun()
                     if st.button("Open to Students", key=f"open_{test['id']}", type="primary"):
                         open_test(test["id"])
                         st.rerun()

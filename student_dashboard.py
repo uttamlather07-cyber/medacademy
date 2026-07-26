@@ -139,14 +139,44 @@ def _render_test_taking_screen(attempt: dict):
     current_qid = attempt.get("current_question_id") or questions[0]["id"]
     current_q = next((q for q in questions if q["id"] == current_qid), questions[0])
 
+    subjects = list(dict.fromkeys(q["subject"] for q in questions))  # first-seen order, de-duplicated
+
     _render_countdown_display(attempt, test)
+
+    # Subject tabs — only shown when a test actually has more than one
+    # subject, same reasoning as the Telegram bot: a single-subject (or
+    # un-tagged 'General') test has nothing to switch between, so
+    # showing a one-item tab row would just be noise.
+    if len(subjects) > 1:
+        _render_subject_tabs(attempt, subjects, current_q)
+
     st.divider()
 
+    section_qs = [q for q in questions if q["subject"] == current_q["subject"]]
     col_main, col_palette = st.columns([2.2, 1])
     with col_main:
-        _render_question_panel(attempt, test, current_q, questions, answers)
+        _render_question_panel(attempt, test, current_q, section_qs, answers, all_questions=questions)
     with col_palette:
-        _render_palette(attempt, questions, answers, current_q)
+        _render_palette(attempt, section_qs, answers, current_q)
+
+
+def _render_subject_tabs(attempt, subjects, current_q):
+    """One button per subject; clicking a subject that isn't the
+    current one jumps straight to that subject's FIRST question — same
+    'click Physics, land on Physics Q1' behavior as the Telegram bot's
+    subject tabs, rather than just relabeling something while leaving
+    the student stranded on whatever question they were on."""
+    from database import get_test_questions
+    cols = st.columns(len(subjects))
+    for i, subj in enumerate(subjects):
+        with cols[i]:
+            is_current = subj == current_q["subject"]
+            if st.button(subj, key=f"subjtab_{attempt['id']}_{subj}", type=("primary" if is_current else "secondary"), use_container_width=True):
+                if not is_current:
+                    all_qs = get_test_questions(attempt["test_id"])
+                    first_q = next(q for q in all_qs if q["subject"] == subj)
+                    set_current_question(attempt["id"], first_q["id"])
+                    st.rerun()
 
 
 def _render_countdown_display(attempt: dict, test: dict):
@@ -230,8 +260,12 @@ def _parse_ts(ts) -> float:
     return datetime.datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
 
 
-def _render_question_panel(attempt, test, current_q, questions, answers):
-    section_qs = questions  # single flat list — no subject grouping in v1 of this rebuild
+def _render_question_panel(attempt, test, current_q, section_qs, answers, all_questions):
+    """section_qs: only the CURRENT SUBJECT's questions (for Next/Prev/
+    numbering within this subject). all_questions: every question in
+    the whole test, regardless of subject (for the Submit confirmation's
+    totals — those must reflect the ENTIRE test, not just whichever
+    subject the student happens to be looking at right now)."""
     q_number = next((i for i, q in enumerate(section_qs, start=1) if q["id"] == current_q["id"]), 1)
 
     st.markdown(f"**Question {q_number} of {len(section_qs)}**")
@@ -269,8 +303,14 @@ def _render_question_panel(attempt, test, current_q, questions, answers):
         st.session_state[f"confirm_submit_{attempt['id']}"] = True
 
     if st.session_state.get(f"confirm_submit_{attempt['id']}"):
+        # Deliberately counts against all_questions/answers (the WHOLE
+        # test), not section_qs — a student sitting on the Chemistry tab
+        # needs to see how much of the ENTIRE test they've answered
+        # before submitting, not just Chemistry's count, or this would
+        # understate their progress on every subject but the one
+        # they're currently viewing.
         answered = len([a for a in answers.values() if not a["is_skipped"] and a["selected_option"]])
-        st.warning(f"You've answered {answered} of {len(section_qs)} questions. Submit now?")
+        st.warning(f"You've answered {answered} of {len(all_questions)} questions across the whole test. Submit now?")
         c1, c2 = st.columns(2)
         with c1:
             if st.button("Yes, submit final answer", type="primary", key=f"confirm_yes_{attempt['id']}"):
@@ -362,7 +402,15 @@ def _render_results_screen(attempt, test, questions):
 
 def _render_review(attempt, questions):
     answers = get_attempt_answers(attempt["id"])
-    for i, q in enumerate(questions, start=1):
+    last_subject = None
+    subject_counter = 0
+    for q in questions:
+        if q["subject"] != last_subject:
+            st.markdown(f"#### {html.escape(q['subject'])}")
+            last_subject = q["subject"]
+            subject_counter = 0
+        subject_counter += 1
+
         entry = answers.get(q["id"])
         selected = entry["selected_option"] if entry and not entry["is_skipped"] else None
         is_correct = selected == q["correct_answer"]
@@ -373,7 +421,7 @@ def _render_review(attempt, questions):
                 status, color = "Correct", "#22c55e"
             else:
                 status, color = "Incorrect", "#ef4444"
-            st.markdown(f"**Q{i}.** {html.escape(q['question'])}")
+            st.markdown(f"**Q{subject_counter}.** {html.escape(q['question'])}")
             st.markdown(f"<span style='color:{color};font-weight:600;'>{status}</span>", unsafe_allow_html=True)
             for opt in q["options"]:
                 marker = ""

@@ -67,6 +67,14 @@ create table if not exists tests (
 create table if not exists test_questions (
     id              bigint generated always as identity primary key,
     test_id         bigint not null references tests(id) on delete cascade,
+    -- Which subject this question belongs to within its test (e.g.
+    -- "Physics", "Chemistry") — lets the student-side palette group and
+    -- tab between subjects instead of showing one flat numbered list,
+    -- same navigation model as the Telegram bot. Defaults to a single
+    -- synthetic bucket so a test built with no subject distinction at
+    -- all still works (no tabs shown, matches the bot's "Pasted Paper"
+    -- single-bucket behavior for the same case).
+    subject         text not null default 'General',
     order_index     integer not null,
     question        text not null,
     options         jsonb not null,       -- e.g. ["5/12", "12/13", "5/13", "12/5"]
@@ -74,7 +82,7 @@ create table if not exists test_questions (
     explanation     text,
     created_at      timestamptz not null default now()
 );
-create index if not exists idx_test_questions_test on test_questions(test_id, order_index);
+create index if not exists idx_test_questions_test on test_questions(test_id, subject, order_index);
 
 -- ---------- ATTEMPTS ----------
 -- One row per student-attempt-at-a-test. A student CAN have multiple

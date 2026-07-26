@@ -17,7 +17,13 @@ an oversight. Admin pastes questions in; students take timed tests.
    the SQL Editor, and run it. It's safe to re-run if you need to (every
    statement uses `IF NOT EXISTS` / `CREATE OR REPLACE`, or an explicit
    drop-first for the one thing that needs it).
-3. **This creates a BRAND NEW set of tables** (`app_users`, `tests`,
+3. **If you already ran an earlier version of schema.sql and have live
+   data** (accounts, tests already created), also run
+   `migration_001_add_subject.sql` — this adds subject-tab navigation
+   (Physics/Chemistry/etc.) to the test-taking screen. It's purely
+   additive: every existing question automatically gets subject =
+   'General' and nothing you already built breaks or needs redoing.
+4. **This creates a BRAND NEW set of tables** (`app_users`, `tests`,
    `test_questions`, `test_attempts`, `test_answers`) — it does **not**
    touch or delete your old `app_state` table. Your old data stays
    exactly where it is; it's just not read by this new code. If you want
@@ -84,7 +90,12 @@ streamlit run app.py
   exactly how this avoids reintroducing the old "clicks need 2-3 tries"
   bug.
 - **Free navigation**: jump to any question directly via the palette,
-  not just Next/Previous — matches what you asked for.
+  AND jump to any subject via subject tabs — matches what you asked
+  for. Creating a test is now two steps: set up the test shell (title/
+  duration/marking), then add subjects one at a time (pick a subject
+  name, paste that subject's questions, repeat) — same pattern as the
+  Telegram bot's walkthrough. You can come back to a draft test later
+  via **Manage Existing Tests → Add More Subjects** to keep adding.
 - **Color-coded palette**: green = answered, orange = current question,
   grey = unanswered — matches your reference screenshot.
 - **Answers/correct-answers only revealed after submit** — the review

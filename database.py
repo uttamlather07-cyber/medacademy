@@ -147,23 +147,29 @@ def create_test(title: str, duration_minutes: int, marks_correct: float, marks_w
     return _run(_do)
 
 
-def add_questions(test_id: int, questions: list[dict]) -> int:
+def add_questions(test_id: int, questions: list[dict], subject: str = "General") -> int:
     """questions: list of {question, options, answer, explanation}
     dicts, exactly the shape parse_pasted_questions already produces —
     no reshaping needed at the call site. order_index is assigned here
-    sequentially starting from whatever's already in the test, so
-    calling this more than once on the same test (e.g. pasting in two
-    batches) appends rather than overwriting."""
+    sequentially starting from whatever's already in the test FOR THIS
+    SUBJECT specifically (not globally across the whole test) — so
+    pasting Physics then Chemistry gives each subject its own clean
+    1, 2, 3... numbering, matching how the student-side palette numbers
+    questions within a subject tab, same as the Telegram bot."""
     if not questions:
         return 0
     client = _get_client()
 
     def _do():
-        existing = client.table("test_questions").select("order_index").eq("test_id", test_id).order("order_index", desc=True).limit(1).execute()
+        existing = (
+            client.table("test_questions").select("order_index")
+            .eq("test_id", test_id).eq("subject", subject)
+            .order("order_index", desc=True).limit(1).execute()
+        )
         start_index = (existing.data[0]["order_index"] + 1) if existing.data else 0
         rows = [
             {
-                "test_id": test_id, "order_index": start_index + i,
+                "test_id": test_id, "subject": subject, "order_index": start_index + i,
                 "question": q["question"], "options": q["options"],
                 "correct_answer": q["answer"], "explanation": q.get("explanation", ""),
             }
@@ -251,11 +257,34 @@ def get_open_tests() -> list[dict]:
 
 
 def get_test_questions(test_id: int) -> list[dict]:
+    """Ordered by subject first, then order_index within that subject —
+    so consuming this as one flat list still naturally groups every
+    subject's questions together (Physics 1-15, then Chemistry 1-15,
+    etc.) rather than interleaving them. student_dashboard.py's palette
+    groups explicitly by the 'subject' field regardless, but this
+    ordering keeps a plain flat rendering sane too."""
     client = _get_client()
 
     def _do():
-        result = client.table("test_questions").select("*").eq("test_id", test_id).order("order_index").execute()
+        result = client.table("test_questions").select("*").eq("test_id", test_id).order("subject").order("order_index").execute()
         return result.data
+    return _run(_do)
+
+
+def get_test_subjects(test_id: int) -> list[str]:
+    """Distinct subject names for a test, in first-added order (not
+    alphabetical) — matches the order the admin pasted them in, since
+    that's usually a deliberate sequencing (e.g. Physics, Chemistry,
+    Botany, Zoology) worth preserving on the student-side subject tabs."""
+    client = _get_client()
+
+    def _do():
+        result = client.table("test_questions").select("subject, created_at").eq("test_id", test_id).order("created_at").execute()
+        seen = []
+        for row in result.data:
+            if row["subject"] not in seen:
+                seen.append(row["subject"])
+        return seen
     return _run(_do)
 
 
