@@ -15,7 +15,7 @@ from database import (
     create_test, add_questions, get_test, get_all_tests, open_test,
     close_test, delete_test, get_test_questions, get_test_leaderboard,
     get_lifetime_leaderboard, create_daily_set, get_todays_daily_set,
-    get_todays_target_feed, DatabaseUnavailableError,
+    get_todays_target_feed, get_todos_feed_today, DatabaseUnavailableError,
 )
 from question_parser import parse_pasted_questions
 from sidebar import render_nav, render_roster
@@ -356,7 +356,29 @@ def _render_daily_tab():
         return
     if not feed:
         st.caption("No targets set yet today.")
+    else:
+        for row in feed:
+            icon = "✅" if row["is_complete"] else "⏳"
+            st.markdown(f"{icon} **{html.escape(row['username'])}** — {html.escape(row['goal_text'])}")
+
+    st.divider()
+    st.subheader("Today's To-Do Lists")
+    st.caption("Every student's own multi-item checklist for today — read-only here; students add/check off their own items.")
+    try:
+        todo_feed = get_todos_feed_today()
+    except DatabaseUnavailableError:
+        st.error("Lost connection to the database.")
         return
-    for row in feed:
-        icon = "✅" if row["is_complete"] else "⏳"
-        st.markdown(f"{icon} **{html.escape(row['username'])}** — {html.escape(row['goal_text'])}")
+    if not todo_feed:
+        st.caption("No to-do lists started yet today.")
+        return
+    for summary in todo_feed:
+        with st.container(border=True):
+            st.markdown(f"**{html.escape(summary['username'])}** — {summary['done_count']}/{summary['total_count']} done")
+            for item in summary["items"]:
+                icon = "✅" if item["is_complete"] else "⬜"
+                text_style = "text-decoration: line-through; color: var(--text-faint);" if item["is_complete"] else ""
+                st.markdown(
+                    f"<div>{icon} <span style='{text_style}'>{html.escape(item['item_text'])}</span></div>",
+                    unsafe_allow_html=True,
+                )
