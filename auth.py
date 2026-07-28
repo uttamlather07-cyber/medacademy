@@ -47,7 +47,7 @@ import base64
 import streamlit as st
 
 from database import (
-    verify_login, redeem_signup_code, create_session, validate_session,
+    verify_login, register_user, create_session, validate_session,
     delete_session, DatabaseUnavailableError,
 )
 
@@ -135,16 +135,11 @@ def render_login_signup():
 
         with tab_signup:
             with st.form("signup_form"):
-                st.caption(
-                    "Signup requires a one-time code from the bot — DM the bot on Telegram and use "
-                    "/getsitecode to get yours (only works if you're a member of the group)."
-                )
-                signup_code = st.text_input("Signup code (from the bot)")
                 new_username = st.text_input("Choose a username")
                 new_password = st.text_input("Choose a password", type="password")
                 submitted = st.form_submit_button("Sign Up", type="primary", use_container_width=True)
             if submitted:
-                _handle_signup(signup_code.strip(), new_username.strip(), new_password)
+                _handle_signup(new_username.strip(), new_password)
 
     st.stop()
 
@@ -178,18 +173,7 @@ def _handle_login(username: str, password: str, stay_logged_in: bool):
     st.rerun()
 
 
-def _handle_signup(code: str, username: str, password: str):
-    """Signup now requires a code minted by the Telegram bot's
-    cmd_getsitecode, ONLY after it verifies real group membership via
-    getChatMember — see migration_003_signup_codes.sql for the full
-    reasoning. Every distinct failure reason (missing code, expired,
-    already used, invalid, vs. a plain username clash) gets its own
-    honest message rather than one generic 'signup failed', since a
-    student needs to know whether the problem is their code (go back
-    to the bot) or just their chosen username (pick a different one)."""
-    if not code:
-        st.error("Enter the signup code the bot gave you — get one by messaging the bot /getsitecode.")
-        return
+def _handle_signup(username: str, password: str):
     if not username or not password:
         st.error("Choose both a username and password.")
         return
@@ -197,21 +181,12 @@ def _handle_signup(code: str, username: str, password: str):
         st.error("Password should be at least 4 characters.")
         return
     try:
-        result = redeem_signup_code(code, username, password)
+        result = register_user(username, password, role="student")
     except DatabaseUnavailableError:
         st.error("Lost connection to the database. Please try again in a moment.")
         return
-    if result == "invalid_code":
-        st.error("That code doesn't exist — check it and try again, or get a fresh one from the bot.")
-        return
-    if result == "expired":
-        st.error("That code has expired — message the bot /getsitecode again for a new one.")
-        return
-    if result == "already_used":
-        st.error("That code has already been used. Each code only works once — get a new one from the bot if this wasn't you.")
-        return
-    if result == "username_taken":
-        st.error("That username is already taken — your code is still valid, just pick a different username.")
+    if result == "taken":
+        st.error("That username is already taken.")
         return
     if result != "ok":
         st.error("Something went wrong creating your account. Please try again.")

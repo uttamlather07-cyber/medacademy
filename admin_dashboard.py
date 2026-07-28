@@ -14,7 +14,8 @@ import streamlit as st
 from database import (
     create_test, add_questions, get_test, get_all_tests, open_test,
     close_test, delete_test, get_test_questions, get_test_leaderboard,
-    get_lifetime_leaderboard, DatabaseUnavailableError,
+    get_lifetime_leaderboard, create_daily_set, get_todays_daily_set,
+    get_todays_target_feed, DatabaseUnavailableError,
 )
 from question_parser import parse_pasted_questions
 from sidebar import render_nav, render_roster
@@ -28,6 +29,8 @@ def render_admin_dashboard(db_unused=None):
 
     if page == "Tests":
         _render_test_manager()
+    elif page == "Daily":
+        _render_daily_tab()
     elif page == "Leaderboard":
         _render_leaderboard_tab()
 
@@ -288,3 +291,72 @@ def _render_leaderboard_for(test_id: int):
             f"{medal} **{html.escape(row['username'])}** — {row['score']:g} pts "
             f"({row['correct_count']} correct, {row['wrong_count']} wrong)"
         )
+
+
+# ============================================================
+# DAILY SET + TARGETS FEED (admin view)
+# ============================================================
+
+def _render_daily_tab():
+    st.subheader("Today's Daily Set")
+    existing = get_todays_daily_set()
+
+    if existing:
+        st.success(f"Today's set is live: **{html.escape(existing['title'])}**")
+        try:
+            q_count = len(get_test_questions(existing["id"]))
+        except DatabaseUnavailableError:
+            q_count = "?"
+        st.caption(f"{q_count} question(s). Full results are in the regular Leaderboard tab once you're ready to check them, or right here below.")
+        with st.expander("Today's leaderboard"):
+            _render_leaderboard_for(existing["id"])
+    else:
+        st.caption("Nothing set for today yet — create one below. It goes live immediately, no separate 'open' step.")
+        with st.container(border=True):
+            subject = st.text_input("Subject", placeholder="e.g. Physics")
+            st.caption("Paste today's questions below (blank line between each) — same format as full tests.")
+            raw_text = st.text_area("Paste questions here", height=220, key="daily_paste")
+
+            if st.button("Parse & Preview", key="daily_parse"):
+                parsed, errors = parse_pasted_questions(raw_text)
+                st.session_state.daily_pending_q = parsed
+                st.session_state.daily_pending_e = errors
+
+            parsed = st.session_state.get("daily_pending_q", [])
+            errors = st.session_state.get("daily_pending_e", [])
+            if parsed:
+                st.success(f"{len(parsed)} question(s) parsed.")
+            if errors:
+                st.warning(f"{len(errors)} block(s) skipped:")
+                for e in errors:
+                    st.caption(f"• {e}")
+
+            can_create = bool(subject.strip()) and len(parsed) > 0
+            if st.button("Go Live Now", type="primary", disabled=not can_create, use_container_width=True):
+                try:
+                    create_daily_set(
+                        title=f"Daily Set — {subject.strip()}", subject=subject.strip(),
+                        questions=parsed, created_by=st.session_state.username,
+                    )
+                except DatabaseUnavailableError:
+                    st.error("Lost connection to the database — please try again.")
+                    return
+                st.session_state.pop("daily_pending_q", None)
+                st.session_state.pop("daily_pending_e", None)
+                st.success("Today's daily set is live.")
+                st.rerun()
+
+    st.divider()
+    st.subheader("Today's Targets Feed")
+    st.caption("Every student's self-set goal for today — visible to everyone, not graded.")
+    try:
+        feed = get_todays_target_feed()
+    except DatabaseUnavailableError:
+        st.error("Lost connection to the database.")
+        return
+    if not feed:
+        st.caption("No targets set yet today.")
+        return
+    for row in feed:
+        icon = "✅" if row["is_complete"] else "⏳"
+        st.markdown(f"{icon} **{html.escape(row['username'])}** — {html.escape(row['goal_text'])}")

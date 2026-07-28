@@ -30,7 +30,9 @@ from database import (
     get_open_tests, get_test, get_test_questions,
     start_or_resume_attempt, get_attempt, set_current_question,
     submit_answer, get_attempt_answers, finalize_attempt,
-    get_test_leaderboard, DatabaseUnavailableError,
+    get_test_leaderboard, get_todays_daily_set, get_active_attempt,
+    set_daily_target, mark_my_target_complete, get_my_todays_target,
+    get_todays_target_feed, DatabaseUnavailableError,
 )
 from sidebar import render_nav, render_roster
 
@@ -63,6 +65,8 @@ def render_student_dashboard(db_unused=None):
 
     if page == "Tests":
         _render_test_list()
+    elif page == "Daily":
+        _render_daily_page()
     elif page == "Leaderboard":
         _render_leaderboard_picker()
 
@@ -458,3 +462,79 @@ def _render_leaderboard_picker():
         for i, row in enumerate(board, start=1):
             medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"{i}.")
             st.markdown(f"{medal} **{html.escape(row['username'])}** — {row['score']:g} pts")
+
+
+# ============================================================
+# DAILY SET + PERSONAL TARGET (student view)
+# ============================================================
+
+def _render_daily_page():
+    st.subheader("Today's Daily Set")
+    try:
+        daily = get_todays_daily_set()
+    except DatabaseUnavailableError:
+        st.error("Lost connection to the database.")
+        return
+
+    if not daily:
+        st.caption("Nothing posted yet today — check back later.")
+    else:
+        username = st.session_state.username
+        try:
+            already_attempted = get_active_attempt(daily["id"], username)
+        except DatabaseUnavailableError:
+            already_attempted = None
+        with st.container(border=True):
+            st.markdown(f"**{html.escape(daily['title'])}**")
+            st.caption(f"{daily['duration_minutes']} minutes · +{daily['marks_correct']:g} correct / {daily['marks_wrong']:g} wrong")
+            label = "Resume" if already_attempted else "Begin Today's Set"
+            if st.button(label, type="primary", key="begin_daily"):
+                _begin_or_resume(daily["id"])
+        with st.expander("Today's leaderboard"):
+            board = get_test_leaderboard(daily["id"], limit=10)
+            if not board:
+                st.caption("No scored attempts yet.")
+            for i, row in enumerate(board, start=1):
+                medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"{i}.")
+                st.markdown(f"{medal} **{html.escape(row['username'])}** — {row['score']:g} pts")
+
+    st.divider()
+    st.subheader("Your Target for Today")
+    st.caption("A personal goal you set yourself — not graded, just for accountability and a bit of friendly competition.")
+
+    username = st.session_state.username
+    try:
+        my_target = get_my_todays_target(username)
+    except DatabaseUnavailableError:
+        my_target = None
+
+    with st.container(border=True):
+        goal_text = st.text_input(
+            "Today's goal", value=my_target["goal_text"] if my_target else "",
+            placeholder="e.g. 8/10 on today's set, or 50 questions from my book",
+        )
+        col_a, col_b = st.columns(2)
+        with col_a:
+            if st.button("Save Goal", use_container_width=True):
+                if goal_text.strip():
+                    set_daily_target(username, goal_text.strip(), linked_test_id=daily["id"] if daily else None)
+                    st.rerun()
+        with col_b:
+            already_done = my_target["is_complete"] if my_target else False
+            if st.button("✅ Mark Complete" if not already_done else "✅ Completed", disabled=already_done, use_container_width=True):
+                mark_my_target_complete(username)
+                st.rerun()
+
+    st.divider()
+    st.subheader("Today's Targets — Everyone")
+    try:
+        feed = get_todays_target_feed()
+    except DatabaseUnavailableError:
+        st.error("Lost connection to the database.")
+        return
+    if not feed:
+        st.caption("No targets set yet today — be the first.")
+        return
+    for row in feed:
+        icon = "✅" if row["is_complete"] else "⏳"
+        st.markdown(f"{icon} **{html.escape(row['username'])}** — {html.escape(row['goal_text'])}")

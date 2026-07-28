@@ -15,7 +15,7 @@ from auth import log_out
 def render_nav(admin: bool) -> str:
     with st.sidebar:
         st.markdown(f"**Logged in as** `{st.session_state.username}`")
-        pages = ["Tests", "Leaderboard"]
+        pages = ["Tests", "Daily", "Leaderboard"]
         page = st.radio("Navigate", pages, label_visibility="collapsed")
         st.divider()
         if st.button("Log Out", use_container_width=True):

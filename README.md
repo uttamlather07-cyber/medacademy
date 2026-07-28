@@ -104,6 +104,28 @@ streamlit run app.py
 - **Answers/correct-answers only revealed after submit** — the review
   screen, never live during the test.
 
+## Daily question sets + personal targets
+
+Run `migration_004_daily_targets.sql` in Supabase's SQL Editor. Adds a
+new **Daily** tab (both admin and student sides):
+
+- **Admin**: pick a subject, paste today's questions, tap "Go Live
+  Now" — it's live immediately, no separate open step (unlike a
+  regular test, which stays in draft until you open it). Reuses your
+  existing test-scoring/leaderboard logic entirely, it's just flagged
+  and dated so it shows separately from your main test list.
+- **Student**: sees today's set (if one exists) with a Begin button
+  that goes through the exact same test-taking screen as any other
+  test, plus a personal "Today's Target" box where they set their own
+  goal (tied to the daily set, a free-form study goal, or both) and
+  mark it complete themselves. Nothing about target completion is
+  graded or verified — it's a self-reported accountability/competition
+  feed, visible to everyone, showing who set what and who's finished.
+
+Only today's targets are shown in the feed; each day starts fresh, but
+every row stays in the database permanently if you ever want to look
+back at history.
+
 ## Group-membership-gated signup (only your Telegram group can join)
 
 Run `migration_003_signup_codes.sql` in Supabase's SQL Editor. After

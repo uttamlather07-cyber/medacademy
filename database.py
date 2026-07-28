@@ -200,9 +200,16 @@ def set_user_blocked(username: str, blocked: bool):
 # ============================================================
 
 def create_test(title: str, duration_minutes: int, marks_correct: float, marks_wrong: float,
-                 created_by: str, window_start: str = None, window_end: str = None) -> int:
+                 created_by: str, window_start: str = None, window_end: str = None,
+                 is_daily: bool = False, daily_date: str = None) -> int:
     """Creates a test in 'draft' status — not visible to students until
-    open_test() is called. Returns the new test's id."""
+    open_test() is called. Returns the new test's id.
+
+    is_daily/daily_date: set by create_daily_set below when this is a
+    same-day question set rather than a regular full-length mock test —
+    everything else (scoring, leaderboard, question paste flow) is
+    identical, this flag is purely what lets the website show it in a
+    separate "Today's Daily Set" section instead of the main test list."""
     client = _get_client()
 
     def _do():
@@ -210,10 +217,50 @@ def create_test(title: str, duration_minutes: int, marks_correct: float, marks_w
             "title": title, "duration_minutes": duration_minutes,
             "marks_correct": marks_correct, "marks_wrong": marks_wrong,
             "created_by": created_by, "window_start": window_start, "window_end": window_end,
-            "status": "draft",
+            "status": "draft", "is_daily": is_daily, "daily_date": daily_date,
         }).execute()
         return result.data[0]["id"]
     return _run(_do)
+
+
+def create_daily_set(title: str, subject: str, questions: list[dict], created_by: str,
+                      duration_minutes: int = 30, marks_correct: float = 4, marks_wrong: float = -1) -> int:
+    """Thin wrapper around create_test + add_questions specifically for
+    today's daily question set — one call instead of the admin needing
+    to remember is_daily/daily_date every time. Opens it immediately
+    (skips the draft step) since a daily set is meant to go live the
+    moment it's created, unlike a full mock test you might want to
+    review before opening."""
+    test_id = create_test(
+        title=title, duration_minutes=duration_minutes, marks_correct=marks_correct,
+        marks_wrong=marks_wrong, created_by=created_by, is_daily=True, daily_date=_today_str(),
+    )
+    add_questions(test_id, questions, subject=subject)
+    open_test(test_id)
+    return test_id
+
+
+def get_todays_daily_set() -> dict | None:
+    """The one daily set for today, if the admin has created one — the
+    website's "Today's Daily Set" section calls this to decide whether
+    to show a quiz card at all. Returns None on a day nothing was
+    created, not an error."""
+    client = _get_client()
+
+    def _do():
+        result = (
+            client.table("tests").select("*")
+            .eq("is_daily", True).eq("daily_date", _today_str())
+            .order("created_at", desc=True).limit(1)
+            .execute()
+        )
+        return result.data[0] if result.data else None
+    return _run(_do)
+
+
+def _today_str() -> str:
+    import datetime
+    return datetime.date.today().isoformat()
 
 
 def add_questions(test_id: int, questions: list[dict], subject: str = "General") -> int:
@@ -547,4 +594,74 @@ def get_lifetime_leaderboard(limit: int = 20) -> list[dict]:
             key=lambda r: r["total_score"], reverse=True,
         )
         return ranked[:limit]
+    return _run(_do)
+
+
+# ============================================================
+# DAILY TARGETS — personal, self-set, self-reported daily goals.
+# Separate from test scoring entirely: nothing here is graded or
+# verified, it's a lightweight "who set what, who finished it" feed
+# that makes daily effort visible even on days with no formal quiz.
+# ============================================================
+
+def set_daily_target(username: str, goal_text: str, linked_test_id: int = None):
+    """Sets (or overwrites) TODAY's target for this student — routes
+    through the set_daily_target RPC (see migration_004), which is an
+    atomic upsert on the (username, target_date) unique pair, so
+    submitting the form twice quickly (e.g. a slow connection making a
+    student think their first tap didn't register) safely updates the
+    same row instead of erroring or creating a duplicate."""
+    client = _get_client()
+
+    def _do():
+        client.rpc("set_daily_target", {
+            "p_username": username, "p_goal_text": goal_text, "p_linked_test_id": linked_test_id,
+        }).execute()
+    return _run(_do)
+
+
+def mark_my_target_complete(username: str):
+    """Self-reported completion — there is deliberately no verification
+    step here (per the feature's own design: a personal goal a student
+    marks done themselves, not something graded). A student marking a
+    goal complete that they didn't actually finish is a trust/honesty
+    question between them and their own competitiveness, not something
+    this function tries to police."""
+    client = _get_client()
+
+    def _do():
+        client.rpc("mark_target_complete", {"p_username": username}).execute()
+    return _run(_do)
+
+
+def get_my_todays_target(username: str) -> dict | None:
+    client = _get_client()
+
+    def _do():
+        result = (
+            client.table("daily_targets").select("*")
+            .eq("username", username).eq("target_date", _today_str())
+            .execute()
+        )
+        return result.data[0] if result.data else None
+    return _run(_do)
+
+
+def get_todays_target_feed() -> list[dict]:
+    """Every student's target for today, completed ones first then by
+    who set theirs earliest — this IS the "who did how much" feed. Only
+    scoped to today; yesterday's targets aren't shown here (each day's
+    competition is its own thing, not an ever-growing list), though
+    every row stays in the table permanently for history if you ever
+    want to look back."""
+    client = _get_client()
+
+    def _do():
+        result = (
+            client.table("daily_targets").select("*")
+            .eq("target_date", _today_str())
+            .order("is_complete", desc=True).order("created_at")
+            .execute()
+        )
+        return result.data
     return _run(_do)
