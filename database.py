@@ -665,3 +665,118 @@ def get_todays_target_feed() -> list[dict]:
         )
         return result.data
     return _run(_do)
+
+
+# ============================================================
+# DAILY TO-DO LIST — personal, self-set, MULTI-item daily checklist.
+# Deliberately a separate feature from DAILY TARGETS above rather than
+# an extension of it: a target is one self-set goal with a single
+# done/not-done flag; a to-do list is however many items a student adds
+# for the day, each individually checked off, with a completion COUNT
+# (e.g. "3/5") that's the actual point of the shared feed below — a
+# single boolean can't represent that. Resets fresh each day the same
+# way daily_targets does (see migration_005_daily_todos.sql): only
+# TODAY's rows are ever queried by the functions below, though nothing
+# is deleted automatically, so history stays in the table.
+# ============================================================
+
+def add_todo_item(username: str, item_text: str) -> int:
+    """Appends one new item to TODAY's list for this student — routes
+    through the add_todo_item RPC (see migration_005), which also
+    figures out the correct sort_order server-side so two quick
+    submissions can't race into the same position."""
+    client = _get_client()
+
+    def _do():
+        result = client.rpc("add_todo_item", {
+            "p_username": username, "p_item_text": item_text,
+        }).execute()
+        return result.data
+    return _run(_do)
+
+
+def toggle_todo_item(item_id: int, username: str) -> bool:
+    """Flips one item's is_complete via the toggle_todo_item RPC, which
+    scopes the update by (id, username) together — a student can only
+    ever toggle their OWN item, even if another student's item id were
+    somehow guessed. Returns the item's new state."""
+    client = _get_client()
+
+    def _do():
+        result = client.rpc("toggle_todo_item", {
+            "p_id": item_id, "p_username": username,
+        }).execute()
+        return result.data
+    return _run(_do)
+
+
+def delete_todo_item(item_id: int, username: str):
+    """Removes one item — e.g. a typo, or a task the student decides
+    not to track anymore. Same (id, username) scoping as
+    toggle_todo_item, for the same reason."""
+    client = _get_client()
+
+    def _do():
+        client.rpc("delete_todo_item", {"p_id": item_id, "p_username": username}).execute()
+    return _run(_do)
+
+
+def get_my_todos_today(username: str) -> list[dict]:
+    """This student's own to-do list for today, in the order they were
+    added (sort_order) — used to render their personal checklist with
+    checkboxes and a delete option per item."""
+    client = _get_client()
+
+    def _do():
+        result = (
+            client.table("daily_todos").select("*")
+            .eq("username", username).eq("todo_date", _today_str())
+            .order("sort_order")
+            .execute()
+        )
+        return result.data
+    return _run(_do)
+
+
+def get_todos_feed_today() -> list[dict]:
+    """Every student's to-do items for today, grouped by student here
+    in Python (Supabase's client doesn't do nested grouping server-side
+    the way a raw SQL GROUP BY could) rather than in the database, so
+    the shared feed can show each student's full list AND a completion
+    count together. Ordered by each student's completion fraction
+    (most-complete first), then alphabetically, so the feed doubles as
+    a lightweight leaderboard-of-effort for the day — matching the
+    'completed ones first' ordering get_todays_target_feed already uses
+    for the same reason.
+
+    Returns [{"username": str, "items": [row, ...], "done_count": int,
+    "total_count": int}, ...]."""
+    client = _get_client()
+
+    def _do():
+        result = (
+            client.table("daily_todos").select("*")
+            .eq("todo_date", _today_str())
+            .order("sort_order")
+            .execute()
+        )
+        return result.data
+    rows = _run(_do)
+
+    by_user: dict[str, list[dict]] = {}
+    for row in rows:
+        by_user.setdefault(row["username"], []).append(row)
+
+    summaries = []
+    for username, items in by_user.items():
+        done_count = sum(1 for i in items if i["is_complete"])
+        summaries.append({
+            "username": username, "items": items,
+            "done_count": done_count, "total_count": len(items),
+        })
+
+    summaries.sort(key=lambda s: (
+        -(s["done_count"] / s["total_count"] if s["total_count"] else 0),
+        s["username"].lower(),
+    ))
+    return summaries
