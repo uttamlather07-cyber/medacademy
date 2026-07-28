@@ -32,7 +32,9 @@ from database import (
     submit_answer, get_attempt_answers, finalize_attempt,
     get_test_leaderboard, get_todays_daily_set, get_active_attempt,
     set_daily_target, mark_my_target_complete, get_my_todays_target,
-    get_todays_target_feed, DatabaseUnavailableError,
+    get_todays_target_feed, add_todo_item, toggle_todo_item,
+    delete_todo_item, get_my_todos_today, get_todos_feed_today,
+    DatabaseUnavailableError,
 )
 from sidebar import render_nav, render_roster
 
@@ -526,6 +528,9 @@ def _render_daily_page():
                 st.rerun()
 
     st.divider()
+    _render_todo_section(username)
+
+    st.divider()
     st.subheader("Today's Targets — Everyone")
     try:
         feed = get_todays_target_feed()
@@ -538,3 +543,77 @@ def _render_daily_page():
     for row in feed:
         icon = "✅" if row["is_complete"] else "⏳"
         st.markdown(f"{icon} **{html.escape(row['username'])}** — {html.escape(row['goal_text'])}")
+
+
+def _render_todo_section(username: str):
+    """Personal multi-item daily checklist, PLUS a shared feed showing
+    every student's own list and completion count — deliberately
+    separate from the single-goal Daily Target above it (see
+    database.py's DAILY TO-DO LIST section docstring for why this is a
+    distinct feature, not a variant of the target). Resets fresh each
+    day, same as the target above; nothing here is graded."""
+    st.subheader("Your To-Do List — Today")
+    st.caption("Add as many items as you want for today. Anyone can see your list and how much you've finished.")
+
+    try:
+        my_todos = get_my_todos_today(username)
+    except DatabaseUnavailableError:
+        st.error("Lost connection to the database.")
+        my_todos = []
+
+    with st.container(border=True):
+        new_item = st.text_input(
+            "Add an item", key="new_todo_item",
+            placeholder="e.g. 30 Physics MCQs, revise Krebs cycle, watch 1 lecture",
+        )
+        if st.button("➕ Add Item", use_container_width=True):
+            if new_item.strip():
+                add_todo_item(username, new_item.strip())
+                st.session_state.new_todo_item = ""
+                st.rerun()
+
+        if not my_todos:
+            st.caption("Nothing added yet today — add your first item above.")
+        for item in my_todos:
+            col_check, col_text, col_del = st.columns([0.08, 0.82, 0.10])
+            with col_check:
+                checked = st.checkbox(
+                    "done", value=item["is_complete"], key=f"todo_check_{item['id']}",
+                    label_visibility="collapsed",
+                )
+                if checked != item["is_complete"]:
+                    toggle_todo_item(item["id"], username)
+                    st.rerun()
+            with col_text:
+                text_style = "text-decoration: line-through; color: var(--text-faint);" if item["is_complete"] else ""
+                st.markdown(f"<span style='{text_style}'>{html.escape(item['item_text'])}</span>", unsafe_allow_html=True)
+            with col_del:
+                if st.button("🗑️", key=f"todo_del_{item['id']}", help="Remove this item"):
+                    delete_todo_item(item["id"], username)
+                    st.rerun()
+
+        if my_todos:
+            done = sum(1 for i in my_todos if i["is_complete"])
+            st.caption(f"**{done}/{len(my_todos)} done today**")
+
+    st.divider()
+    st.subheader("Today's To-Do Lists — Everyone")
+    st.caption("Everyone's list and progress for today, most-complete first.")
+    try:
+        todo_feed = get_todos_feed_today()
+    except DatabaseUnavailableError:
+        st.error("Lost connection to the database.")
+        return
+    if not todo_feed:
+        st.caption("No to-do lists started yet today — be the first.")
+        return
+    for summary in todo_feed:
+        with st.container(border=True):
+            st.markdown(f"**{html.escape(summary['username'])}** — {summary['done_count']}/{summary['total_count']} done")
+            for item in summary["items"]:
+                icon = "✅" if item["is_complete"] else "⬜"
+                text_style = "text-decoration: line-through; color: var(--text-faint);" if item["is_complete"] else ""
+                st.markdown(
+                    f"<div>{icon} <span style='{text_style}'>{html.escape(item['item_text'])}</span></div>",
+                    unsafe_allow_html=True,
+                )
