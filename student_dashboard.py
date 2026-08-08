@@ -163,7 +163,16 @@ def _render_test_taking_screen(attempt: dict):
     with col_main:
         _render_question_panel(attempt, test, current_q, section_qs, answers, all_questions=questions)
     with col_palette:
-        _render_palette(attempt, section_qs, answers, current_q)
+        # Desktop-only rendering of this container: CSS in styles.py
+        # hides .st-key-desktop_palette_wrap under 768px, where the
+        # columns above have already stacked vertically anyway.
+        # st.container(key=...) (not raw st.markdown HTML — see the
+        # note by the mobile counterpart below) gives Streamlit a real
+        # wrapping element with an auto-assigned, CSS-targetable class.
+        # Its buttons get a "d" key prefix so they never collide with
+        # the mobile expander's copy of the same palette.
+        with st.container(key="desktop_palette_wrap"):
+            _render_palette(attempt, section_qs, answers, current_q, key_prefix="d")
 
 
 def _render_subject_tabs(attempt, subjects, current_q):
@@ -274,8 +283,8 @@ def _render_question_panel(attempt, test, current_q, section_qs, answers, all_qu
     subject the student happens to be looking at right now)."""
     q_number = next((i for i, q in enumerate(section_qs, start=1) if q["id"] == current_q["id"]), 1)
 
-    st.markdown(f"**Question {q_number} of {len(section_qs)}**")
-    st.markdown(html.escape(current_q["question"]))
+    st.markdown(f'<div class="question-label">Question {q_number} of {len(section_qs)}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="question-stem">{html.escape(current_q["question"]).replace(chr(10), "<br>")}</div>', unsafe_allow_html=True)
 
     entry = answers.get(current_q["id"])
     current_selection = entry["selected_option"] if entry and not entry["is_skipped"] else None
@@ -303,6 +312,25 @@ def _render_question_panel(attempt, test, current_q, section_qs, answers, all_qu
                 _go_to_relative(attempt, section_qs, current_q, +1)
             else:
                 st.rerun()
+
+    # Mobile-only palette: same data as the desktop side column, but
+    # tucked into a collapsed-by-default expander AFTER Skip/Previous/
+    # Next rather than a wide always-open grid competing with them for
+    # screen space. CSS (targeting the .st-key-mobile_palette_wrap class
+    # Streamlit auto-assigns to this keyed container) hides this whole
+    # block on viewports above 768px, where the desktop side column
+    # (rendered by the caller) is shown instead.
+    # NOTE: st.markdown('<div>...') calls do NOT actually wrap later
+    # widgets in the real DOM — Streamlit renders each st.* call as an
+    # independent sibling block, so raw HTML div tags around widgets
+    # are a no-op for containment. st.container(key=...) is the correct
+    # way to get a real wrapping element with a CSS-targetable class.
+    # Keys on the buttons inside get an "m" prefix so they never
+    # collide with the desktop copy's "d"-prefixed keys for the same
+    # questions.
+    with st.container(key="mobile_palette_wrap"):
+        with st.expander("Question Palette", expanded=False):
+            _render_palette(attempt, section_qs, answers, current_q, key_prefix="m", show_heading=False)
 
     st.divider()
     if st.button("Submit Test", type="primary", use_container_width=True):
@@ -337,8 +365,17 @@ def _go_to_relative(attempt, section_qs, current_q, direction):
     st.rerun()
 
 
-def _render_palette(attempt, questions, answers, current_q):
-    st.markdown("**Question Palette**")
+def _render_palette(attempt, questions, answers, current_q, key_prefix="d", show_heading=True):
+    """key_prefix distinguishes the desktop side-column instance ("d")
+    from the mobile expander instance ("m") of this exact same palette
+    — both get rendered every run (CSS just shows/hides whichever fits
+    the viewport), so their widget keys must never collide.
+    show_heading=False skips the "Question Palette" text (used on
+    mobile, where the st.expander it's nested in already shows that
+    same label as its own clickable header — printing it again inside
+    would just duplicate it right below itself)."""
+    if show_heading:
+        st.markdown("**Question Palette**")
     st.caption("🟩 Answered · 🟧 Current · ⬜ Unanswered/Skipped")
 
     # st.button has no native color parameter (only 'primary'/
@@ -351,7 +388,7 @@ def _render_palette(attempt, questions, answers, current_q):
     # answered changes attempt-to-attempt and question-to-question.
     css_rules = []
     for q in questions:
-        key = f"pal_{attempt['id']}_{q['id']}"
+        key = f"pal_{key_prefix}_{attempt['id']}_{q['id']}"
         entry = answers.get(q["id"])
         is_current = q["id"] == current_q["id"]
         is_answered = entry and not entry["is_skipped"] and entry["selected_option"]
@@ -374,7 +411,7 @@ def _render_palette(attempt, questions, answers, current_q):
         for i, q in enumerate(row):
             with cols[i]:
                 q_pos = questions.index(q) + 1
-                if st.button(str(q_pos), key=f"pal_{attempt['id']}_{q['id']}", use_container_width=True):
+                if st.button(str(q_pos), key=f"pal_{key_prefix}_{attempt['id']}_{q['id']}", use_container_width=True):
                     set_current_question(attempt["id"], q["id"])
                     st.rerun()
 

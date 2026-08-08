@@ -136,7 +136,61 @@ div[data-testid="stVerticalBlockBorderWrapper"]:hover { border-color: var(--bord
    selectors), since which questions are answered changes constantly
    and can't be a static rule in this file. */
 .qpalette-btn-wrap .stButton>button {
-    aspect-ratio: 1; padding: 0; font-family: var(--mono); font-weight: 700; font-size: 0.85rem;
+    aspect-ratio: 1; padding: 0; font-family: var(--mono); font-weight: 700; font-size: 0.95rem;
+}
+
+/* ============ QUESTION TEXT / OPTIONS — sized up for readability ============ */
+/* The question stem (rendered as markdown by _render_question_panel)
+   and its "Question N of M" label were riding on Streamlit's small
+   default body font — bumped up here so the actual test content reads
+   like the primary thing on the page, not fine print. */
+.question-label {
+    font-size: 1rem !important; color: var(--text-dim) !important;
+    font-weight: 700 !important; letter-spacing: 0.02em; margin-bottom: 6px;
+}
+.question-stem {
+    font-size: 1.35rem !important; line-height: 1.55 !important;
+    color: var(--text) !important; font-weight: 500 !important;
+    margin: 4px 0 22px 0 !important;
+}
+@media (max-width: 768px) {
+    .question-stem { font-size: 1.15rem !important; line-height: 1.5 !important; }
+}
+
+/* Answer options (st.radio) — Streamlit's default radio label text is
+   ~0.9rem, too small to be the main tappable content of the page.
+   Each option also gets padding + a card-like hit area so it's easy
+   to tap accurately on a phone, not just a tiny dot + small text. */
+div[role="radiogroup"] {
+    gap: 6px !important;
+}
+div[role="radiogroup"] label {
+    background: var(--bg-card) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 10px !important;
+    padding: 12px 16px !important;
+    width: 100%;
+    transition: border-color 0.15s ease, background 0.15s ease;
+}
+div[role="radiogroup"] label:hover {
+    border-color: var(--border-strong) !important;
+}
+div[role="radiogroup"] label > div:last-child p {
+    font-size: 1.08rem !important;
+    line-height: 1.5 !important;
+    color: var(--text) !important;
+}
+@media (max-width: 768px) {
+    div[role="radiogroup"] label > div:last-child p { font-size: 1rem !important; }
+    div[role="radiogroup"] label { padding: 11px 14px !important; }
+}
+
+/* Skip / Previous / Save & Next / Submit — larger tap targets + text,
+   since these are the buttons a student presses on every single
+   question for the entire test duration. */
+.stButton>button, .stFormSubmitButton>button {
+    font-size: 1rem;
+    padding: 0.7rem 1rem;
 }
 
 /* ============ SIDEBAR ============ */
@@ -164,6 +218,47 @@ hr, [data-testid="stDivider"] { border-color: var(--border) !important; }
 
 @media (max-width: 640px) {
     .exam-bar { flex-direction: column; align-items: stretch; gap: 10px; }
+}
+
+/* ============ MOBILE QUESTION SCREEN ============ */
+/* On a phone, Streamlit stacks the [question | palette] columns
+   vertically — which used to dump a full 45-51 button numbered grid
+   directly under the question, forcing a long scroll past it before
+   Skip/Previous/Next were even reachable, and making the palette
+   itself cramped and hard to tap accurately.
+   student_dashboard.py renders two DIFFERENT palette containers, each
+   a real st.container(key=...) (giving Streamlit a genuine wrapping
+   element, unlike raw st.markdown HTML which does NOT contain later
+   widgets in the actual DOM): one plain (desktop, side column) and
+   one holding an st.expander (collapsed by default, placed after the
+   answer controls, mobile). This rule pair shows only the one
+   appropriate for the viewport, so mobile gets
+   Question -> Options -> Skip/Prev/Next on screen first, with the
+   palette tucked into a tap-to-open expander below rather than
+   competing for space.
+   768px matches Streamlit's own column-stacking breakpoint, so the
+   swap lines up exactly with when columns go vertical anyway. */
+.st-key-desktop_palette_wrap { display: block; }
+.st-key-mobile_palette_wrap { display: none; }
+
+@media (max-width: 768px) {
+    .st-key-desktop_palette_wrap { display: none; }
+    .st-key-mobile_palette_wrap { display: block; }
+    .st-key-mobile_palette_wrap .streamlit-expanderHeader {
+        font-weight: 700; font-size: 0.95rem;
+    }
+    /* Streamlit's own built-in mobile rule sets stColumn's
+       min-width: calc(100% - 24px) below its container breakpoint,
+       which is exactly right for most of this app's columns (stacking
+       e.g. Skip/Previous/Next-style rows into full-width rows makes
+       sense there) but wrong for the palette's 5-per-row number grid,
+       which should stay a compact grid, not a 45-row vertical list.
+       Overriding min-width back down (letting the existing
+       flex: 1 1 calc(20% - 16px) rule set the actual width) restores
+       the 5-across grid specifically inside the mobile palette. */
+    .st-key-mobile_palette_wrap [data-testid="stColumn"] {
+        min-width: calc(20% - 16px) !important;
+    }
 }
 </style>
 """
