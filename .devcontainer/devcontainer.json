@@ -1,33 +1,364 @@
-{
-  "name": "Python 3",
-  // Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
-  "image": "mcr.microsoft.com/devcontainers/python:1-3.11-bookworm",
-  "customizations": {
-    "codespaces": {
-      "openFiles": [
-        "README.md",
-        "app.py"
-      ]
-    },
-    "vscode": {
-      "settings": {},
-      "extensions": [
-        "ms-python.python",
-        "ms-python.vscode-pylance"
-      ]
-    }
-  },
-  "updateContentCommand": "[ -f packages.txt ] && sudo apt update && sudo apt upgrade -y && sudo xargs apt install -y <packages.txt; [ -f requirements.txt ] && pip3 install --user -r requirements.txt; pip3 install --user streamlit; echo '✅ Packages installed and Requirements met'",
-  "postAttachCommand": {
-    "server": "streamlit run app.py --server.enableCORS false --server.enableXsrfProtection false"
-  },
-  "portsAttributes": {
-    "8501": {
-      "label": "Application",
-      "onAutoForward": "openPreview"
-    }
-  },
-  "forwardPorts": [
-    8501
-  ]
-}
+Q1. Schleiden and Schwann together formulated the cell theory, but it did not explain how new cells were formed. Rudolf Virchow modified this theory. Which of the following integrated statements is INCORRECT regarding cell theory and cell dimensions?
+A) Virchow proposed "Omnis cellula-e cellula" stating that cells divide and arise from pre-existing cells.
+B) Schleiden observed that all plants are composed of different kinds of cells, while Schwann concluded that the presence of a cell wall is a unique character of animal cells.
+C) Mycoplasmas are the smallest living cells (0.3 µm in length), whereas human red blood cells are about 7.0 µm in diameter.
+D) Schwann proposed the hypothesis that the bodies of animals and plants are composed of cells and products of cells.
+Answer: B
+Explanation: Schwann studied both plant and animal cells and concluded that the presence of a cell wall is a unique character of plant cells, not animal cells. Animal cells are bounded by a thin outer layer now known as the plasma membrane.
+
+Q2. Match the prokaryotic structural features with their physiological significance:
+I. Mesosomes - A. Storage of phosphate, cyanophycean, and glycogen granules without any membrane
+II. Glycocalyx - B. Site of respiratory enzymes, cell wall formation, and DNA replication
+III. Inclusion bodies - C. Sticky layer providing protection from host immune system and antibiotics
+IV. Pili & Fimbriae - D. Surface structures not involved in motility but aid in conjugation and attachment
+Which of the following represents the correct combination?
+A) I-B, II-C, III-A, IV-D
+B) I-C, II-B, III-A, IV-D
+C) I-B, II-A, III-C, IV-D
+D) I-D, II-C, III-A, IV-B
+Answer: A
+Explanation: Mesosomes are membrane infoldings involved in respiration and cell wall synthesis (I-B). Glycocalyx provides protection (II-C). Inclusion bodies lie free in the cytoplasm storing reserve material without membranes (III-A). Pili and fimbriae are non-motile surface appendages for attachment/conjugation (IV-D).
+
+Q3. According to the Fluid Mosaic Model of Singer and Nicolson (1972), which statement correctly describes the nature and transport across the cell membrane?
+A) The quasi-fluid nature of proteins enables lateral movement of lipids within the overall bilayer.
+B) Phospholipids are arranged as a bilayer with polar hydrophilic heads facing inward and nonpolar hydrophobic tails facing outward.
+C) Neutral solutes move across the membrane by simple diffusion along the concentration gradient, whereas polar molecules require carrier proteins.
+D) The Na+/K+ pump transports 2 Na+ ions outward and 3 K+ ions inward against their concentration gradient using ATP.
+Answer: C
+Explanation: Neutral solutes cross freely via simple diffusion down concentration gradients, while polar molecules cannot pass the nonpolar lipid bilayer without carrier proteins. In option A, the quasi-fluid nature of lipids enables lateral movement of proteins (not vice versa). Option B is wrong because hydrophilic heads face outward and hydrophobic tails face inward. Option D is wrong because the pump moves 3 Na+ outward and 2 K+ inward.
+
+Q4. The endomembrane system includes organelle structures whose functions are tightly coordinated. Which group of organelles is strictly EXCLUDED from the endomembrane system despite being membrane-bound?
+A) Endoplasmic reticulum, Golgi complex, Lysosomes, Vacuoles
+B) Peroxisomes, Mitochondria, Chloroplasts
+C) Endoplasmic reticulum, Lysosomes, Peroxisomes, Vacuoles
+D) Mitochondria, Chloroplasts, Golgi complex, Lysosomes
+Answer: B
+Explanation: Mitochondria, chloroplasts, and peroxisomes are excluded from the endomembrane system because their functions are not coordinated with the ER, Golgi complex, lysosomes, and vacuoles.
+
+Q5. A cell active in synthesizing lipid-based steroidal hormones and detoxifying drugs will show a prominent development of which organelle compared to a cell actively secreting digestive enzymes?
+A) Smooth Endoplasmic Reticulum over Rough Endoplasmic Reticulum
+B) Rough Endoplasmic Reticulum over Smooth Endoplasmic Reticulum
+C) Free 70S ribosomes over membrane-bound 80S ribosomes
+D) Primary Lysosomes over Golgi Apparatus
+Answer: A
+Explanation: Smooth Endoplasmic Reticulum (SER) is the major site for synthesis of lipids and steroidal hormones in animal cells, as well as drug detoxification. Cells secreting enzymes (proteins) develop RER prominently.
+
+Q6. Consider the journey of a lysosomal acid hydrolase enzyme from synthesis to functional site. Which sequence correctly traces its pathway through the cell?
+A) Synthesis on SER -> Cis face of Golgi -> Trans face of Golgi -> Primary Lysosome
+B) Synthesis on RER -> Cis (forming) face of Golgi -> Trans (maturing) face of Golgi -> Primary Lysosome
+C) Synthesis on RER -> Trans face of Golgi -> Cis face of Golgi -> Secretory vesicle
+D) Synthesis on free cytoplasmic ribosomes -> Cis face of Golgi -> Vacuole -> Lysosome
+Answer: B
+Explanation: Proteins/enzymes are synthesized by ribosomes attached to RER, transported via vesicles to the cis (forming/convex) face of the Golgi apparatus, modified in cisternae, packaged at the trans (maturing/concave) face, and budded off as primary lysosomes.
+
+Q7. Which statement correctly connects the acidic nature of lysosomes with the transport mechanism of plant vacuoles?
+A) Lysosomes maintain an acidic pH (~5.0) via active pumping of H+ ions into their lumen; similarly, the tonoplast pumps ions against concentration gradients into the vacuole.
+B) Lysosomes accumulate hydrolytic enzymes at alkaline pH (~8.5); the tonoplast facilitates passive diffusion of water and ions down concentration gradients.
+C) Both lysosomal lumen and vacuolar sap have lower H+ ion concentrations than the surrounding cytoplasm.
+D) Tonoplast allows free movement of ions, making ion concentration in the vacuole lower than that in the cytoplasm.
+Answer: A
+Explanation: Lysosomal acid hydrolases function optimally at acidic pH maintained by H+-ATPase proton pumps. Similarly, the plant vacuolar membrane (tonoplast) actively pumps ions against concentration gradients into the vacuole, making concentration higher in the vacuole than in the cytoplasm.
+
+Q8. Mitochondria are semi-autonomous double membrane-bound organelles. Which combination of structural and biochemical features confirms their semi-autonomous nature?
+A) Outer membrane folded into cristae, 80S ribosomes, single linear dsDNA, and RuBisCO enzyme
+B) Inner membrane folded into cristae, 70S ribosomes, single circular dsDNA, and self-replicating capacity
+C) Matrix containing 70S ribosomes, linear ssDNA, and absence of protein synthesis machinery
+D) Intermembrane space containing respiratory enzymes, 80S ribosomes, and circular RNA
+Answer: B
+Explanation: Mitochondria contain their own single circular double-stranded DNA molecule, RNA molecules, 70S ribosomes, and protein synthesis components, enabling them to synthesize some proteins and divide by fission. Inner membrane infoldings are called cristae.
+
+Q9. Both chloroplasts and mitochondria possess double membranes and internal compartments. Which statement accurately compares their internal structural compartmentalization?
+A) Chloroplasts have a third membrane system forming thylakoids enclosing a lumen, whereas mitochondria have inner membrane folds (cristae) extending into the matrix.
+B) Mitochondrial matrix contains 80S ribosomes and linear DNA, while chloroplast stroma contains 70S ribosomes and circular DNA.
+C) Both organelles pump protons into their matrix to drive ATP synthesis during electron transport.
+D) Outer membrane of both chloroplasts and mitochondria is folded into cristae to increase surface area.
+Answer: A
+Explanation: Chloroplasts feature a three-membrane hierarchy (outer, inner, thylakoid membrane enclosing the thylakoid lumen). Mitochondria feature an inner membrane folded into cristae enclosing the matrix. Protons accumulate in the thylakoid lumen in chloroplasts and intermembrane space in mitochondria.
+
+Q10. A plant tissue stored in the dark loses its green color and accumulates starches and fats. Which transformation of plastids has primarily taken place in these cells?
+A) Chromoplasts -> Chloroplasts
+B) Chloroplasts -> Amyloplasts and Elaioplasts
+C) Aleuroplasts -> Chloroplasts
+D) Chloroplasts -> Chromoplasts
+Answer: B
+Explanation: Chloroplasts contain chlorophyll for photosynthesis. In the dark, chlorophyll degrades and plastids convert into leucoplasts (colorless plastids), specifically Amyloplasts (which store carbohydrates/starch) and Elaioplasts (which store oils/fats). Aleuroplasts store proteins.
+
+Q11. Eukaryotic 80S ribosomes and prokaryotic 70S ribosomes differ in their sedimentation coefficients and subunit compositions. Which statement is mathematically and structurally CORRECT?
+A) 70S consists of 50S and 30S subunits; 80S consists of 60S and 40S subunits.
+B) 70S consists of 40S and 30S subunits; 80S consists of 50S and 30S subunits.
+C) 70S contains 28S rRNA; 80S contains 16S rRNA.
+D) Subunits of 80S ribosome dissociate into 50S and 30S at low Mg2+ concentration.
+Answer: A
+Explanation: The 'S' stands for Svedberg's unit (sedimentation coefficient). Prokaryotic 70S ribosome is composed of 50S and 30S subunits. Eukaryotic 80S ribosome is composed of 60S and 40S subunits.
+
+Q12. Cytoskeletal elements provide mechanical support, motility, and maintenance of cell shape. Which table entry correctly matches the cytoskeletal element with its subunit protein and structural association?
+A) Microfilaments | Tubulin | Centrioles and Spindle fibers
+B) Microtubules | Tubulin | Cilia, Flagella, and Centrioles
+C) Intermediate filaments | Actin | Amoeboid movement and Cleavage furrow
+D) Microtubules | Myosin | Cyclosis and Pseudopodia
+Answer: B
+Explanation: Microtubules are composed of tubulin protein and form cilia, flagella, centrioles, basal bodies, and spindle apparatus. Microfilaments are made of actin protein and participate in amoeboid movement, cleavage furrow, and cyclosis.
+
+Q13. An axoneme isolated from a eukaryotic cilium is cross-sectioned and examined under an electron microscope. What structural arrangement of microtubules will be observed?
+A) 9 radial triplets of microtubules with a central proteinaceous hub (9+0)
+B) 9 peripheral doublets and 2 central singlets connected by radial spokes (9+2)
+C) 9 peripheral singlets and 2 central doublets enclosed by a sheath (9+2)
+D) 9 radial doublets with no central microtubules (9+0)
+Answer: B
+Explanation: The core of cilia/flagella called the axoneme possesses 9 pairs (doublets) of radially arranged peripheral microtubules and one pair of centrally located microtubules, giving a (9+2) array.
+
+Q14. Centrosome is an organelle usually containing two cylindrical structures called centrioles. Which statement regarding centriole structure is CORRECT?
+A) It exhibits a 9+2 arrangement of peripheral singlet microtubules.
+B) Both centrioles lie parallel to each other and are surrounded by amorphous pericentriolar materials.
+C) It is made of 9 evenly spaced peripheral triplets of tubulin protein arranged in a cartwheel pattern (9+0).
+D) Centrioles form the basal body of bacterial flagella.
+Answer: C
+Explanation: Centrioles lie perpendicular to each other, surrounded by amorphous pericentriolar material. Each centriole is composed of 9 evenly spaced peripheral triplets of tubulin (9+0 pattern) showing a cartwheel organization. They form the basal body of eukaryotic cilia/flagella, not bacterial flagella.
+
+Q15. Perinuclear space is the fluid-filled region present between the two nuclear membranes. What is its width and functional significance according to NCERT?
+A) 1 to 5 nm; acts as a barrier between nuclear materials and cytoplasm
+B) 10 to 50 nm; forms a barrier between materials present inside the nucleus and the cytoplasm
+C) 100 to 500 nm; site of active ribosomal RNA synthesis
+D) 10 to 50 µm; connects the nucleoplasm directly with Golgi cisternae
+Answer: B
+Explanation: The nuclear envelope consists of two parallel membranes with a space between them called the perinuclear space (10 to 50 nm), which forms a physical barrier between materials present inside the nucleus and that of the cytoplasm.
+
+Q16. A human cell actively engaged in intense protein synthesis (such as a pancreatic acinar cell) will characteristically exhibit which nuclear feature?
+A) Small, single, inactive nucleolus and condensed heterochromatin
+B) Larger and more numerous nucleoli continuous with the nucleoplasm
+C) Complete absence of nuclear pore complexes
+D) Polytene chromosomes with multiple centromeres
+Answer: B
+Explanation: Nucleolus is a non-membrane bound spherical structure present in the nucleoplasm and is the site for active ribosomal RNA (rRNA) synthesis. Cells actively carrying out protein synthesis have larger and more numerous nucleoli.
+
+Q17. Chromatin contains DNA, basic proteins called histones, non-histone proteins, and RNA. Which statement regarding chromatin organization is correct?
+A) Euchromatin is densely packed, stains dark, and is transcriptionally inactive.
+B) Heterochromatin is loosely packed, stains light, and is transcriptionally active.
+C) Euchromatin is loosely packed, stains light, and is transcriptionally active.
+D) Histones are acidic proteins rich in basic amino acids like tryptophan and alanine.
+Answer: C
+Explanation: In a typical nucleus, regions of chromatin that are loosely packed and stain light are called euchromatin (transcriptionally active). Densely packed regions that stain dark are heterochromatin (transcriptionally inactive). Histones are basic proteins rich in lysine and arginine.
+
+Q18. A chromosome has its centromere located extremely close to one end, resulting in one extremely short arm and one very long arm. How is this chromosome classified?
+A) Metacentric
+B) Sub-metacentric
+C) Acrocentric
+D) Telocentric
+Answer: C
+Explanation: An acrocentric chromosome has a centromere situated close to its end forming one extremely short and one very long arm. Metacentric has a middle centromere (equal arms). Sub-metacentric has a centromere slightly away from the middle. Telocentric has a terminal centromere.
+
+Q19. What is a "Satellite" in human chromosome morphology?
+A) The primary constriction containing kinetochores
+B) A non-staining secondary constriction present at a constant location giving the appearance of a small fragment
+C) A specialized telomeric region rich in RNA molecules
+D) The central proteinaceous hub of a centriole
+Answer: B
+Explanation: Few chromosomes have non-staining secondary constrictions at a constant location. This gives the appearance of a small fragment called the satellite (SAT-chromosome).
+
+20. Plant cell wall layers mature in a specific sequence from outside to inside. Which option lists the layers correctly from outermost to innermost?
+A) Secondary wall -> Primary wall -> Middle lamella -> Plasma membrane
+B) Middle lamella -> Primary wall -> Secondary wall -> Plasma membrane
+C) Primary wall -> Middle lamella -> Secondary wall -> Plasma membrane
+D) Middle lamella -> Secondary wall -> Primary wall -> Plasma membrane
+Answer: B
+Explanation: Middle lamella (chiefly calcium pectate) is the outermost layer holding neighboring plant cells together. The primary wall is formed next (capable of growth), and as the cell matures, the secondary wall is formed on the inner side (towards the plasma membrane).
+
+Q21. Algal cell wall composition differs significantly from higher plant cell walls. Which set of substances is uniquely present in algal cell walls according to NCERT?
+A) Cellulose, Hemicellulose, Pectins, Proteins
+B) Cellulose, Galactans, Mannans, Calcium carbonate
+C) Chitin, Glucans, Peptidoglycan, Lipopolysaccharides
+D) Muramic acid, Teichoic acid, Cellulose, Pectins
+Answer: B
+Explanation: Algae have cell walls made of cellulose, galactans, mannans, and minerals like calcium carbonate. Plants have cell walls made of cellulose, hemicellulose, pectins, and proteins.
+
+Q22. Which of the following prokaryotic inclusion bodies is NOT bounded by any membrane system and lies free in the cytoplasm?
+A) Phosphate granules, Cyanophycean granules, and Glycogen granules
+B) Gas vacuoles in purple and green photosynthetic bacteria
+C) Both A and B
+D) Neither A nor B (all inclusion bodies have single membranes)
+Answer: C
+Explanation: Inclusion bodies in prokaryotes are reserve materials stored in cytoplasm without any membrane system (e.g., phosphate, cyanophycean, and glycogen granules). Gas vacuoles found in blue-green and purple/green photosynthetic bacteria are also non-membrane bound proteinaceous structures.
+
+Q23. Which transport mechanism across the plasma membrane requires specific transmembrane carrier proteins, operates down a concentration gradient, and DOES NOT consume ATP?
+A) Simple Diffusion
+B) Active Transport
+C) Facilitated Diffusion
+D) Primary Endocytosis
+Answer: C
+Explanation: Facilitated diffusion moves polar molecules/ions across the lipid bilayer down their concentration gradient (passive, no ATP energy spent) with the help of specific transmembrane carrier proteins or channel proteins.
+
+Q24. Bacterial flagella and eukaryotic flagella share similar function (motility) but differ in structure. Which statement accurately highlights this difference?
+A) Bacterial flagella consist of filament, hook, and basal body made of flagellin; eukaryotic flagella consist of axoneme (9+2) made of tubulin enclosed by plasma membrane.
+B) Bacterial flagella are surrounded by plasma membrane with a 9+2 microtubular array; eukaryotic flagella lack any membrane enclosure.
+C) Bacterial flagella are driven by ATP hydrolysis at radial spokes; eukaryotic flagella are driven by proton motive force across mesosomes.
+D) Eukaryotic flagella contain basal bodies made of 9+2 doublets; bacterial flagella contain basal bodies made of microfilaments.
+Answer: A
+Explanation: Bacterial flagellum is a simple non-membrane bound appendage made of flagellin protein with 3 parts: filament, hook, and basal body. Eukaryotic flagellum is an extension of the plasma membrane containing an axoneme composed of tubulin microtubules in a 9+2 arrangement.
+
+Q25. Which surface structures of bacteria play a key role in adhesion to host tissues and rocks in streams, but play NO role in cell motility?
+A) Pili only
+B) Fimbriae only
+C) Both Pili and Fimbriae
+D) Flagella and Pili
+Answer: C
+Explanation: Pili (elongated tubular structures made of pilin) and Fimbriae (small bristle-like fibers sprouting out of the cell) do not play any role in motility. Fimbriae help attach bacteria to rocks or host tissues, while pili help in conjugation.
+
+Q26. A secretory glycoprotein destined for extracellular release is synthesized and processed. What is the correct sequence of organelles/structures involved?
+A) Ribosome on RER -> RER lumen -> Transport vesicle -> Cis face of Golgi -> Trans face of Golgi -> Secretory vesicle -> Plasma membrane
+B) Free cytoplasmic ribosome -> SER -> Trans face of Golgi -> Cis face of Golgi -> Lysosome -> Exocytosis
+C) Nucleolus -> RER -> Vacuole -> Cis face of Golgi -> Trans face of Golgi -> Plasma membrane
+D) Ribosome on SER -> Golgi apparatus -> Endosome -> Primary Lysosome -> Plasma membrane
+Answer: A
+Explanation: Secretory proteins are translated by ribosomes into the RER lumen, transported via vesicles to the cis face of Golgi, processed through Golgi cisternae to the trans face, packaged into secretory vesicles, and fused with the plasma membrane for exocytosis.
+
+27. Phagosomes fuse with primary lysosomes to form secondary lysosomes (phagolysosomes). What happens inside these secondary lysosomes?
+A) Synthesis of ribosomal proteins at basic pH
+B) Active digestion of engulfed food/pathogens by hydrolytic enzymes
+C) Storage of reserve carbohydrates as glycogen
+D) Polymerization of tubulin into microtubules
+Answer: B
+Explanation: Primary lysosomes (containing inactive acid hydrolases) fuse with phagosomes (engulfed material) to form secondary lysosomes, where acid hydrolases become active and digest carbohydrates, proteins, lipids, and nucleic acids.
+
+Q28. Why are chloroplasts and mitochondria termed "semi-autonomous" organelles?
+A) They can survive and function completely independently outside a living host cell.
+B) They possess their own circular DNA and 70S ribosomes to synthesize some of their own proteins, but rely on the nuclear genome for others.
+C) They lack membrane enclosures and synthesize all cellular ATP independently.
+D) They are formed de novo from simple inorganic molecules present in the cytoplasm.
+Answer: B
+Explanation: Mitochondria and chloroplasts have their own circular double-stranded DNA, RNA, and 70S ribosomes, allowing them to synthesize some structural/functional proteins. However, most organellar proteins are encoded by nuclear DNA, making them semi-autonomous (partially self-governing).
+
+29. Mesosomes in prokaryotic cells perform functions analogous to which eukaryotic organelle?
+A) Chloroplast
+B) Mitochondria
+C) Lysosome
+D) Centrosome
+Answer: B
+Explanation: Mesosomes are specialized infoldings of the prokaryotic plasma membrane that contain respiratory enzymes for cellular respiration and ATP generation, making them functionally analogous to eukaryotic mitochondria.
+
+Q30. Human erythrocyte (RBC) membrane was chemically analyzed to deduce the fluid mosaic model. What is the approximate ratio of protein and lipid in the RBC membrane according to NCERT?
+A) 40% protein and 52% lipid
+B) 50% protein and 50% lipid
+C) 52% protein and 40% lipid
+D) 70% protein and 20% lipid
+Answer: C
+Explanation: The ratio of protein and lipid varies in different cell types. In human erythrocytes, the membrane has approximately 52 per cent protein and 40 per cent lipids.
+
+Q31. During the cell cycle of an animal cell, when and where does the duplication of centrioles occur?
+A) In the nucleus during G1 phase
+B) In the cytoplasm during S phase
+C) In the nucleus during S phase
+D) In the cytoplasm during G2 phase
+Answer: B
+Explanation: While DNA replication takes place inside the nucleus during the S phase of the cell cycle, the centriole duplicates in the cytoplasm during the S phase in animal cells.
+
+Q32. Gas vacuoles found in cyanobacteria and purple/green photosynthetic bacteria differ from plant cell vacuoles because gas vacuoles:
+A) Are bounded by a single lipid bilayer membrane called tonoplast
+B) Are proteinaceous structures lacking a lipid bilayer, providing buoyancy to the cells
+C) Contain cell sap rich in mineral salts and anthocyanin pigments
+D) Actively accumulate ions against concentration gradients
+Answer: B
+Explanation: Gas vacuoles are not true membrane-bound vacuoles. They are hollow proteinaceous sub-compartments permeable to gases but impermeable to water, providing buoyancy without possessing a lipid bilayer tonoplast or cell sap.
+
+Q33. Chloroplast thylakoids are arranged as stacks called grana, interconnected by stroma lamellae. How do stroma lamellae membranes differ from thylakoid membranes of grana?
+A) Stroma lamellae lack Photosystem II (PS II) and NADP reductase enzyme.
+B) Stroma lamellae lack Photosystem I (PS I) and ATP synthase.
+C) Stroma lamellae contain 80S ribosomes attached to their surface.
+D) Stroma lamellae are completely impermeable to water and carbon dioxide.
+Answer: A
+Explanation: Granum thylakoids contain both PS I and PS II as well as NADP reductase. Stroma lamellae membrane lacks PS II as well as NADP reductase enzyme (possessing only PS I), which leads to cyclic photophosphorylation.
+
+Q34. Peroxisomes are single membrane-bound microbodies found in plant and animal cells. What is their primary biochemical function?
+A) Synthesis of glycolipids and glycoproteins
+B) Hydrogen peroxide (H2O2) metabolism via catalase and photorespiration in C3 plants
+C) Active transport of sucrose into phloem
+D) Breakdown of complex cellulose into glucose units
+Answer: B
+Explanation: Peroxisomes contain oxidative enzymes such as urate oxidase and catalase, which detoxify H2O2 generated during cellular oxidation by converting it into water and oxygen. In C3 plants, peroxisomes participate in photorespiration along with chloroplasts and mitochondria.
+
+Q35. Mycoplasma is a unique prokaryote. Which combination of features correctly characterizes Mycoplasma?
+A) Cell wall made of chitin, obligate aerobe, size 10 µm
+B) Lacks cell wall, pleomorphic, can survive without oxygen, size ~0.3 µm
+C) Cell wall made of peptidoglycan, pathogenic to plants only, size 1 to 2 µm
+D) Bounded by double membrane, contains 80S ribosomes, sensitive to penicillin
+Answer: B
+Explanation: Mycoplasmas are organisms that completely lack a cell wall. They are the smallest living cells known (0.3 µm), highly pleomorphic (variable shape), insensitive to penicillin (which targets cell walls), and can survive without oxygen.
+
+Q36. A mRNA strand in a bacterial cell is being simultaneously translated by multiple ribosomes lined up like beads on a string. This complex is called a:
+A) Polysome or Polyribosome
+B) Dictyosome
+C) Centrosome
+D) Nucleosome
+Answer: A
+Explanation: Several ribosomes may attach to a single mRNA molecule and form a chain called a polyribosome or polysome. The ribosomes of a polysome translate the mRNA into proteins simultaneously.
+
+Q37. Which statement accurately compares the permeability of outer and inner mitochondrial membranes?
+A) Outer membrane is smoothly continuous and more permeable due to porins; inner membrane is selectively permeable and folded into cristae.
+B) Inner membrane is highly permeable to all ions; outer membrane is completely impermeable.
+C) Both membranes are equally permeable to proteins and nucleic acids.
+D) Outer membrane contains ATP synthase complexes; inner membrane lacks carrier proteins.
+Answer: A
+Explanation: The outer mitochondrial membrane is smooth and contains porin proteins, making it permeable to small molecules and ions. The inner membrane is selectively permeable, contains transport proteins and respiratory chain complexes, and is folded into cristae.
+
+Q38. In a mature plant cell, the vacuole can occupy up to 90% of the cell volume. What maintains the turgidity and high osmotic concentration of the vacuolar sap?
+A) Passive diffusion of water outward through tonoplast
+B) Active transport of ions and materials into the vacuole by tonoplast against concentration gradient
+C) Facilitated diffusion of glucose via plasmodesmata
+D) Continuous endocytosis of extracellular fluids
+Answer: B
+Explanation: In plants, the tonoplast facilitates the transport of a number of ions and other materials against concentration gradients into the vacuole. Hence, their concentration is significantly higher in the vacuole than in the cytoplasm, maintaining turgidity.
+
+Q39. Eukaryotic 80S ribosome dissociates into 60S and 40S subunits. Which rRNA species are present in the 60S large subunit?
+A) 16S rRNA only
+B) 28S, 5.8S, and 5S rRNA
+C) 18S rRNA only
+D) 23S and 5S rRNA
+Answer: B
+Explanation: The eukaryotic 60S large subunit contains three rRNA molecules: 28S rRNA, 5.8S rRNA, and 5S rRNA. (The 40S small subunit contains 18S rRNA. In prokaryotes, 50S subunit contains 23S and 5S rRNA, and 30S contains 16S rRNA).
+
+Q40. Ripening of fruits (such as tomatoes and bananas) involves softening of tissue. This softening is primarily due to the enzymatic breakdown of which cell wall region?
+A) Secondary cell wall by cellulase
+B) Middle lamella by pectinase
+C) Primary cell wall by ligninase
+D) Plasmodesmata by amylase
+Answer: B
+Explanation: The middle lamella is a layer mainly composed of calcium and magnesium pectate which glues neighboring plant cells together. During fruit ripening, pectinase enzymes solubilize pectates in the middle lamella, causing cell separation and fruit softening.
+
+Q41. What is the fundamental structural difference between a Centromere and a Kinetochore?
+A) Centromere is a disc-shaped protein complex; Kinetochore is the DNA segment holding sister chromatids.
+B) Centromere is a lipid complex; Kinetochore is made of ribosomal RNA.
+C) Centromere is the primary constriction region of DNA; Kinetochore is the disc-shaped protein structure on its sides for spindle fiber attachment.
+D) Centromere is found only in prokaryotes; Kinetochore is found only in plants.
+Answer: C
+Explanation: The centromere is the primary constriction region of a chromosome where two sister chromatids are held together. On the sides of the centromere lie disc-shaped protein structures called kinetochores, to which spindle fibers attach during mitosis/meiosis.
+
+Q42. What is the primary function of Nuclear Pore Complexes present in the nuclear envelope?
+A) Unidirectional transport of DNA from cytoplasm into nucleoplasm
+B) Passive leakage of chromatin into cytosol
+C) Continuous synthesis of lipids for the outer nuclear membrane
+D) Bidirectional transport of RNA and protein molecules between nucleus and cytoplasm
+Answer: D
+Explanation: Nuclear pores are minute passages formed by the fusion of the two nuclear membranes. They permit movement of RNA and protein molecules in both directions between the nucleus and the cytoplasm.
+
+Q43. Prokaryotic ribosomes are about 15 nm by 20 nm in size and consist of two subunits (50S and 30S). Which rRNA acts as a structural catalyst (ribozyme) for peptide bond formation in bacteria?
+A) 16S rRNA
+B) 5S rRNA
+C) 23S rRNA
+D) 18S rRNA
+Answer: C
+Explanation: In prokaryotes, the 23S rRNA present in the 50S large subunit acts as a peptidyl transferase enzyme (ribozyme) that catalyzes peptide bond formation during translation.
+
+Q44. Active transport and Facilitated diffusion share several operational characteristics, but differ fundamentally in energy requirement and direction. Which option correctly compares them?
+A) Both require ATP energy and move solutes against concentration gradients.
+B) Both show saturation kinetics and require specific membrane proteins, but active transport consumes ATP to move solutes against a concentration gradient.
+C) Facilitated diffusion requires ATP; active transport operates passively down concentration gradients.
+D) Neither transport mechanism exhibits protein specificity or competitive inhibition.
+Answer: B
+Explanation: Both active transport and facilitated diffusion use specific membrane proteins and display transport saturation (saturation kinetics). However, active transport uses ATP energy to pump substances against their concentration gradient, whereas facilitated diffusion is passive down a gradient.
+
+Q45. Sphaerosomes (Oleosomes) are single membrane-bound plant microbodies originating from the ER. What is their major biochemical content and function?
+A) Acid hydrolases for intracellular digestion
+B) Accumulation and hydrolysis of lipids/fats
+C) Fixation of carbon dioxide during Calvin cycle
+D) Synthesis of cell wall hemicellulose
+Answer: B
+Explanation: Sphaerosomes are small, spherical, single membrane-bound plant microbodies derived from the ER that are rich in lipids/fats and hydrolytic enzymes (lipases). They function in lipid synthesis, storage, and mobilization.
