@@ -4,8 +4,9 @@ The admin console: create tests (paste questions in), manage existing
 tests (open/close/delete), and view leaderboards.
 
 No AI generation, no live quiz — stripped entirely per the rebuild's
-scope. Admin pastes questions using the same Q:/A)/Answer:/Explanation:
-format the bot already uses (see question_parser.py).
+scope. Admin pastes questions in a flexible Q:/Q1./Question 1: +
+A)/Answer:/Explanation: style format — see question_parser.py for the
+full range of accepted label punctuation and answer styles.
 """
 
 import html
@@ -113,7 +114,12 @@ def _render_add_subject_flow(test_id: int):
 
     with st.container(border=True):
         subject_name = st.text_input("Subject name", placeholder="e.g. Physics", key=f"subj_name_{test_id}")
-        st.caption("Paste this subject's questions below (blank line between each).")
+        st.caption(
+            "Paste this subject's questions below (blank line between each). "
+            "Question lines can start with Q:, Q1., Q1), or Question 1: — "
+            "options can be A), A., or (A). Math/physics/chemistry symbols "
+            "(H₂O, x², →, µ, °C, etc.) paste through fine."
+        )
         st.code(
             "Q: What is the powerhouse of the cell?\n"
             "A) Nucleus\nB) Mitochondria\nC) Ribosome\nD) Golgi body\n"
